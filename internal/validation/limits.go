@@ -61,3 +61,33 @@ func ParseArchiveDays(raw string, fallback int) (int, error) {
 	}
 	return days, nil
 }
+
+func ParseLevelFilter(raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, nil
+	}
+
+	level, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, NewError(ErrorLevelFilterInvalid, fmt.Sprintf("invalid level value: %s", raw), err)
+	}
+	if level < 1 {
+		return 0, NewError(ErrorLevelFilterInvalid, "level must be greater than or equal to 1", nil)
+	}
+	return level, nil
+}
+
+func ParsePvPOnlyFilter(raw string) (value bool, provided bool, err error) {
+	normalized := strings.ToLower(strings.TrimSpace(raw))
+	switch normalized {
+	case "":
+		return false, false, nil
+	case "1", "true", "yes":
+		return true, true, nil
+	case "0", "false", "no":
+		return false, true, nil
+	default:
+		return false, true, NewError(ErrorPvPFilterInvalid, fmt.Sprintf("invalid pvp value: %s", raw), nil)
+	}
+}

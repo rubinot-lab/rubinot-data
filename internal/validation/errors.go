@@ -43,6 +43,7 @@ const (
 	ErrorMonthInvalid       = 30004
 	ErrorYearInvalid        = 30005
 	ErrorArchiveDaysInvalid = 30006
+	ErrorPvPFilterInvalid   = 30007
 )
 
 type Error struct {

@@ -79,6 +79,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/news/newsticker", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getNewsNewsticker(c)
 		}))
+		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getDeaths(c, validator)
+		}))
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCharacter(c)
 		}))
@@ -412,6 +415,53 @@ func getNewsNewsticker(c *gin.Context) (endpointResult, error) {
 	return endpointResult{
 		PayloadKey: "newslist",
 		Payload:    newsList,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	guildFilter := strings.TrimSpace(c.Query("guild"))
+	levelFilter, levelErr := validation.ParseLevelFilter(c.Query("level"))
+	if levelErr != nil {
+		return endpointResult{}, levelErr
+	}
+
+	pvpValue, pvpProvided, pvpErr := validation.ParsePvPOnlyFilter(c.Query("pvp"))
+	if pvpErr != nil {
+		return endpointResult{}, pvpErr
+	}
+
+	var pvpOnly *bool
+	if pvpProvided {
+		pvpOnly = &pvpValue
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	deaths, sourceURL, err := scraper.FetchDeaths(
+		c.Request.Context(),
+		baseURL,
+		canonicalWorld,
+		worldID,
+		scraper.DeathsFilters{
+			Guild:    guildFilter,
+			MinLevel: levelFilter,
+			PvPOnly:  pvpOnly,
+		},
+		scrapeFetchOptions(),
+	)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "deaths",
+		Payload:    deaths,
 		Sources:    []string{sourceURL},
 	}, nil
 }

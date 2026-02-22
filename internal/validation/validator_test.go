@@ -239,6 +239,62 @@ func TestParseArchiveDays(t *testing.T) {
 	assertValidationCode(t, err, ErrorArchiveDaysInvalid)
 }
 
+func TestParseLevelFilter(t *testing.T) {
+	level, err := ParseLevelFilter("")
+	if err != nil {
+		t.Fatalf("expected empty level filter to be valid, got: %v", err)
+	}
+	if level != 0 {
+		t.Fatalf("expected level 0 for empty filter, got %d", level)
+	}
+
+	level, err = ParseLevelFilter("200")
+	if err != nil {
+		t.Fatalf("expected level to parse successfully, got: %v", err)
+	}
+	if level != 200 {
+		t.Fatalf("expected level 200, got %d", level)
+	}
+
+	_, err = ParseLevelFilter("0")
+	assertValidationCode(t, err, ErrorLevelFilterInvalid)
+
+	_, err = ParseLevelFilter("abc")
+	assertValidationCode(t, err, ErrorLevelFilterInvalid)
+}
+
+func TestParsePvPOnlyFilter(t *testing.T) {
+	value, provided, err := ParsePvPOnlyFilter("")
+	if err != nil {
+		t.Fatalf("expected empty pvp filter to be valid, got: %v", err)
+	}
+	if provided {
+		t.Fatalf("expected provided=false for empty pvp filter, got %v", provided)
+	}
+	if value {
+		t.Fatalf("expected value=false for empty pvp filter, got %v", value)
+	}
+
+	value, provided, err = ParsePvPOnlyFilter("1")
+	if err != nil {
+		t.Fatalf("expected pvp filter 1 to be valid, got: %v", err)
+	}
+	if !provided || !value {
+		t.Fatalf("expected provided=true value=true for pvp=1, got provided=%v value=%v", provided, value)
+	}
+
+	value, provided, err = ParsePvPOnlyFilter("false")
+	if err != nil {
+		t.Fatalf("expected pvp filter false to be valid, got: %v", err)
+	}
+	if !provided || value {
+		t.Fatalf("expected provided=true value=false for pvp=false, got provided=%v value=%v", provided, value)
+	}
+
+	_, _, err = ParsePvPOnlyFilter("maybe")
+	assertValidationCode(t, err, ErrorPvPFilterInvalid)
+}
+
 func testValidator() *Validator {
 	return NewValidator([]World{
 		{ID: 15, Name: "Belaria"},
