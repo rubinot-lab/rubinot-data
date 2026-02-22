@@ -33,6 +33,8 @@ This repo is where we define:
 - `planning/roadmap-phases.md`
 - `planning/risk-register.md`
 - `planning/open-questions.md`
+- `planning/tibiadata/*` (comprehensive reference)
+- `planning/rubinot-data/*` (current vs target endpoint definitions)
 
 ## Scope status
 
