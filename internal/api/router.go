@@ -82,6 +82,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getDeaths(c, validator)
 		}))
+		v1.GET("/transfers", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getTransfers(c, validator)
+		}))
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCharacter(c)
 		}))
@@ -415,6 +418,58 @@ func getNewsNewsticker(c *gin.Context) (endpointResult, error) {
 	return endpointResult{
 		PayloadKey: "newslist",
 		Payload:    newsList,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getTransfers(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Query("world"))
+	levelInput := strings.TrimSpace(c.Query("level"))
+	pageInput := strings.TrimSpace(c.Query("page"))
+
+	worldID := 0
+	canonicalWorld := ""
+	if worldInput != "" {
+		var worldOK bool
+		canonicalWorld, worldID, worldOK = validator.WorldExists(worldInput)
+		if !worldOK {
+			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+		}
+	}
+
+	minLevel, levelErr := validation.ParseLevelFilter(levelInput)
+	if levelErr != nil {
+		return endpointResult{}, levelErr
+	}
+
+	page := 1
+	if pageInput != "" {
+		var pageErr error
+		page, pageErr = validation.ParsePage(pageInput)
+		if pageErr != nil {
+			return endpointResult{}, pageErr
+		}
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	transfers, sourceURL, err := scraper.FetchTransfers(
+		c.Request.Context(),
+		baseURL,
+		scraper.TransfersFilters{
+			WorldID:   worldID,
+			WorldName: canonicalWorld,
+			MinLevel:  minLevel,
+			Page:      page,
+		},
+		scrapeFetchOptions(),
+	)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "transfers",
+		Payload:    transfers,
 		Sources:    []string{sourceURL},
 	}, nil
 }
