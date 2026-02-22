@@ -58,6 +58,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getWorld(c, validator)
 		}))
+		v1.GET("/house/:world/:house_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getHouse(c, validator)
+		}))
 		v1.GET("/houses/:world/:town", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getHouses(c, validator)
 		}))
@@ -123,6 +126,41 @@ func getHouses(c *gin.Context, validator *validation.Validator) (endpointResult,
 	return endpointResult{
 		PayloadKey: "houses",
 		Payload:    houses,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getHouse(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	houseIDInput := strings.TrimSpace(c.Param("house_id"))
+
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	houseID, parseErr := validation.ParseHouseID(houseIDInput)
+	if parseErr != nil {
+		return endpointResult{}, parseErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	house, sourceURL, err := scraper.FetchHouse(
+		c.Request.Context(),
+		baseURL,
+		canonicalWorld,
+		worldID,
+		houseID,
+		validator.AllTowns(),
+		scrapeFetchOptions(),
+	)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "house",
+		Payload:    house,
 		Sources:    []string{sourceURL},
 	}, nil
 }

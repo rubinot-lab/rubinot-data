@@ -2,6 +2,7 @@ package validation
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -104,6 +105,23 @@ func (v *Validator) TownExists(townName string) (canonicalName string, townID in
 		return "", 0, false
 	}
 	return town.Name, town.ID, true
+}
+
+func (v *Validator) AllTowns() []Town {
+	uniqueByID := make(map[int]Town)
+	for _, town := range v.townsByKey {
+		uniqueByID[town.ID] = town
+	}
+
+	allTowns := make([]Town, 0, len(uniqueByID))
+	for _, town := range uniqueByID {
+		allTowns = append(allTowns, town)
+	}
+
+	sort.Slice(allTowns, func(i, j int) bool {
+		return allTowns[i].ID < allTowns[j].ID
+	})
+	return allTowns
 }
 
 var defaultTowns = []Town{

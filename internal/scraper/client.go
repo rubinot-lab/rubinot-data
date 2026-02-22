@@ -119,7 +119,7 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 
 	html := out.Solution.Response
 	lowerHTML := strings.ToLower(html)
-	if strings.Contains(lowerHTML, "just a moment") || strings.Contains(lowerHTML, "challenge-platform") || strings.Contains(lowerHTML, "cf-challenge") {
+	if strings.Contains(lowerHTML, "just a moment") || strings.Contains(lowerHTML, "cf-browser-verification") {
 		return "", validation.NewError(validation.ErrorCloudflareChallengePresent, "cloudflare challenge page still present after flaresolverr", nil)
 	}
 	if strings.Contains(lowerHTML, "maintenance") {
