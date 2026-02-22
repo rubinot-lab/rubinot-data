@@ -22,8 +22,8 @@ type HouseEntry struct {
 }
 
 type HousesResult struct {
-	World         string      `json:"world"`
-	Town          string      `json:"town"`
+	World         string       `json:"world"`
+	Town          string       `json:"town"`
 	HouseList     []HouseEntry `json:"house_list"`
 	GuildhallList []HouseEntry `json:"guildhall_list"`
 }
@@ -37,13 +37,7 @@ func FetchHouses(ctx context.Context, baseURL, world, town string, opts FetchOpt
 	if strings.EqualFold(formattedTown, "ab'dendriel") {
 		formattedTown = "Ab'Dendriel"
 	}
-
-	if opts.FlareSolverrURL == "" {
-		opts.FlareSolverrURL = "http://flaresolverr.network.svc.cluster.local:8191/v1"
-	}
-	if opts.MaxTimeoutMs <= 0 {
-		opts.MaxTimeoutMs = 120000
-	}
+	client := NewClient(opts)
 
 	houseURL := fmt.Sprintf("%s/?subtopic=houses&world=%s&town=%s&type=houses", strings.TrimRight(baseURL, "/"), url.QueryEscape(formattedWorld), url.QueryEscape(formattedTown))
 	guildhallURL := fmt.Sprintf("%s/?subtopic=houses&world=%s&town=%s&type=guildhalls", strings.TrimRight(baseURL, "/"), url.QueryEscape(formattedWorld), url.QueryEscape(formattedTown))
@@ -55,13 +49,13 @@ func FetchHouses(ctx context.Context, baseURL, world, town string, opts FetchOpt
 	)
 
 	started := time.Now()
-	housesHTML, err := fetchViaFlareSolverr(ctx, houseURL, opts)
+	housesHTML, err := client.Fetch(ctx, houseURL)
 	if err != nil {
 		scrapeRequests.WithLabelValues("houses", "error").Inc()
 		scrapeDuration.WithLabelValues("houses").Observe(time.Since(started).Seconds())
 		return HousesResult{}, houseURL, err
 	}
-	guildHTML, err := fetchViaFlareSolverr(ctx, guildhallURL, opts)
+	guildHTML, err := client.Fetch(ctx, guildhallURL)
 	scrapeDuration.WithLabelValues("houses").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("houses", "error").Inc()
