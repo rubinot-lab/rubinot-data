@@ -64,6 +64,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/highscores/:world/:category/:vocation/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getHighscores(c, validator)
 		}))
+		v1.GET("/killstatistics/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getKillstatistics(c, validator)
+		}))
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCharacter(c)
 		}))
@@ -296,6 +299,32 @@ func getHighscores(c *gin.Context, validator *validation.Validator) (endpointRes
 	return endpointResult{
 		PayloadKey: "highscores",
 		Payload:    highscores,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getKillstatistics(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	killstatistics, sourceURL, err := scraper.FetchKillstatistics(
+		c.Request.Context(),
+		baseURL,
+		canonicalWorld,
+		worldID,
+		scrapeFetchOptions(),
+	)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "killstatistics",
+		Payload:    killstatistics,
 		Sources:    []string{sourceURL},
 	}, nil
 }
