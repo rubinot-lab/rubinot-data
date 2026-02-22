@@ -1,0 +1,266 @@
+{
+  "schema_version": "1.0.0",
+  "document_type": "ai_handoff_context",
+  "project": "rubinot-data",
+  "generated_at_utc": "2026-02-22T19:43:00Z",
+  "purpose": "Machine-readable handoff context for future AI sessions: what is done in rubinot-data, what remains to port from TibiaData, and how rubinot-live previously worked.",
+  "repositories": {
+    "rubinot_data": {
+      "path": "/home/openclaw/.openclaw/workspace/repos/rubinot-data",
+      "remote": "https://github.com/giovannirco/rubinot-data",
+      "default_branch": "main",
+      "latest_commits": [
+        {
+          "sha": "f97a061",
+          "message": "docs(planning): add comprehensive tibiadata parity matrix and edge-case catalog"
+        },
+        {
+          "sha": "6a736e9",
+          "message": "docs(planning): add tibia-style porting status and observability scope"
+        },
+        {
+          "sha": "20795bb",
+          "message": "feat(api): add otel tracing, prometheus metrics, and houses endpoint"
+        }
+      ]
+    },
+    "rubinot_live": {
+      "path": "/home/openclaw/.openclaw/workspace/repos/rubinot-live",
+      "role": "legacy/reference implementation for scraping + cached API behavior"
+    },
+    "tibiadata_reference": {
+      "repo": "https://github.com/tibiadata/tibiadata-api-go",
+      "role": "reference API contract and scraper/validation patterns"
+    }
+  },
+  "implemented_in_rubinot_data": {
+    "api_routes": [
+      {
+        "method": "GET",
+        "path": "/",
+        "status": "implemented"
+      },
+      {
+        "method": "GET",
+        "path": "/ping",
+        "status": "implemented"
+      },
+      {
+        "method": "GET",
+        "path": "/healthz",
+        "status": "implemented"
+      },
+      {
+        "method": "GET",
+        "path": "/readyz",
+        "status": "implemented"
+      },
+      {
+        "method": "GET",
+        "path": "/versions",
+        "status": "implemented"
+      },
+      {
+        "method": "GET",
+        "path": "/metrics",
+        "status": "implemented"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/world/:name",
+        "status": "implemented"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/houses/:world/:town",
+        "status": "implemented"
+      }
+    ],
+    "scraping": {
+      "collector": "flaresolverr",
+      "flaresolverr_request_mode": "request.get",
+      "default_flaresolverr_url": "http://flaresolverr.network.svc.cluster.local:8191/v1",
+      "notes": [
+        "world endpoint uses FlareSolverr + HTML parse",
+        "houses endpoint fetches both type=houses and type=guildhalls"
+      ]
+    },
+    "observability": {
+      "metrics": {
+        "enabled": true,
+        "endpoint": "/metrics",
+        "custom_metrics": [
+          "rubinot_scrape_requests_total{endpoint,status}",
+          "rubinot_scrape_duration_seconds{endpoint}",
+          "rubinot_parse_duration_seconds{endpoint}"
+        ]
+      },
+      "tracing": {
+        "enabled": true,
+        "instrumentation": [
+          "gin middleware (otelgin)",
+          "scraper spans for world/houses/flaresolverr"
+        ],
+        "exporter": "OTLP gRPC",
+        "default_otlp_endpoint": "k8s-monitoring-cddlabs-prod-alloy-receiver.observability.svc.cluster.local:4317"
+      }
+    },
+    "response_envelope": {
+      "shape": {
+        "information": {
+          "timestamp": "RFC3339 UTC",
+          "status": {
+            "http_code": "integer",
+            "message": "string"
+          },
+          "sources": [
+            "upstream_url"
+          ]
+        },
+        "payload": "world OR houses"
+      }
+    }
+  },
+  "deployed_runtime_gap": {
+    "important": true,
+    "description": "Code is committed/pushed but cluster may still run an older pinned image digest until image build + digest bump + Argo sync are completed.",
+    "last_observed_live_symptoms": [
+      "GET /v1/houses/Belaria/Venore returned 404",
+      "GET /metrics returned 404",
+      "rubinot-data deployment still on previous digest"
+    ]
+  },
+  "tibiadata_v4_porting_backlog": {
+    "not_started": [
+      "GET /v1/worlds",
+      "GET /v1/character/:name",
+      "GET /v1/guild/:name",
+      "GET /v1/guilds/:world",
+      "GET /v1/highscores/:world/:category/:vocation/:page",
+      "GET /v1/house/:world/:house_id",
+      "GET /v1/killstatistics/:world",
+      "GET /v1/news/archive",
+      "GET /v1/news/archive/:days",
+      "GET /v1/news/id/:news_id",
+      "GET /v1/news/latest",
+      "GET /v1/news/newsticker",
+      "GET /v1/spells",
+      "GET /v1/spell/:spell_id"
+    ],
+    "rubinot_specific_pending": [
+      "GET /v1/deaths/:world",
+      "GET /v1/transfers",
+      "GET /v1/banishments/:world",
+      "GET /v1/events/schedule",
+      "GET /v1/auctions/current/:world/:page",
+      "GET /v1/auctions/history/:world/:page",
+      "GET /v1/auctions/:id"
+    ],
+    "priority_order": [
+      "GET /v1/house/:world/:house_id",
+      "validation-first layer for world/town/house/category/vocation",
+      "error taxonomy with stable domain codes",
+      "GET /v1/worlds",
+      "highscores + restriction mode",
+      "parser fixtures/golden tests"
+    ]
+  },
+  "tibiadata_edgecases_to_port": {
+    "validation_first": [
+      "world existence checks",
+      "town existence checks",
+      "house existence checks (global + in-town)",
+      "highscore category/vocation/page validation",
+      "name lexical validation for character/guild/spell/creature"
+    ],
+    "restriction_mode": [
+      "explicit restricted mode for expensive endpoints",
+      "deterministic restricted-mode errors instead of generic failures"
+    ],
+    "houses_parsing": [
+      "rented status parsing",
+      "auctioned with no bid",
+      "auctioned with highest bid and bidder",
+      "auction ongoing vs auction ended",
+      "paid until date extraction",
+      "moving out date extraction",
+      "transfer receiver/price/acceptance parsing",
+      "house vs guildhall typing",
+      "single-bed and variable bed-count handling"
+    ],
+    "upstream_failure_taxonomy": [
+      "maintenance mode",
+      "forbidden/rate-limited behavior",
+      "unexpected redirects",
+      "unknown upstream status classes",
+      "challenge page still present after solver"
+    ],
+    "normalization": [
+      "case-insensitive world/town normalization",
+      "Ab'Dendriel formatting quirks",
+      "safe URL escaping for special characters"
+    ]
+  },
+  "rubinot_live_previous_behavior": {
+    "api_routes_houses": [
+      "GET /api/v1/houses?world=:world&town=:town[&state=&order=]",
+      "GET /api/v1/houses/details?world=:world&town=:town&houseId=:id",
+      "GET /api/v1/houses/towns"
+    ],
+    "execution_model": {
+      "transport": "Playwright browser pages (not FlareSolverr)",
+      "world_and_town_resolution": "maps names to numeric worldId/townId",
+      "houses_url_shape": "/?subtopic=houses&world=<worldId>&town=<townId>&state=<state>&type=houses&order=<order>",
+      "house_details_url_shape": "/?subtopic=houses&page=view&world=<worldId>&town=<townId>&state=&type=houses&order=name&houseid=<houseId>"
+    },
+    "caching_and_jobs": {
+      "cache_layer": "redis-backed keys (e.g., rubinot:houses:* / rubinot:house-details:*)",
+      "job_types": [
+        "houses_town",
+        "houses_detail",
+        "discovery_houses"
+      ],
+      "job_intervals_present": true,
+      "discovery_pipeline": "town/world discovery schedules houses jobs"
+    },
+    "legacy_validation": {
+      "zod_query_validation": true,
+      "town_whitelist": true,
+      "house_id_min_1": true
+    },
+    "legacy_observability": {
+      "prometheus_metrics": true,
+      "scrape_metrics_recorded": true,
+      "timing_model": [
+        "navigation_ms",
+        "parse_ms",
+        "response stats"
+      ]
+    }
+  },
+  "known_constraints_and_risks": [
+    "Scraping contracts are fragile to upstream HTML changes",
+    "Cloudflare/anti-bot pressure can degrade consistency and freshness",
+    "Without fixture tests, parser regressions are likely",
+    "Without validation-first guardrails, expensive invalid requests waste collector capacity",
+    "Code-complete does not equal runtime-complete under digest-pinned GitOps"
+  ],
+  "handoff_playbook_for_next_ai_session": {
+    "recommended_first_steps": [
+      "Read planning/porting-status.md",
+      "Read planning/tibiadata-porting-parity-matrix.md",
+      "Read this file planning/ai-handoff-rubinot-data-porting.json",
+      "Confirm live image digest in cluster vs latest rubinot-data commit",
+      "Implement /v1/house/:world/:house_id next"
+    ],
+    "definition_of_done_for_each_ported_endpoint": [
+      "route implemented",
+      "validation-first checks present",
+      "parser handles known edgecases",
+      "error mapping includes domain code + stable message",
+      "metrics/traces emitted",
+      "fixture tests added",
+      "deployed digest verified live"
+    ]
+  }
+}
