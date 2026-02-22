@@ -145,6 +145,26 @@ func TestResolveVocation(t *testing.T) {
 	}
 }
 
+func TestResolveHighscoreVocation(t *testing.T) {
+	validator := testValidator()
+
+	vocation, ok := validator.ResolveHighscoreVocation("all")
+	if !ok {
+		t.Fatal("expected all alias to resolve")
+	}
+	if vocation.Name != "(all)" || vocation.ProfessionID != 0 {
+		t.Fatalf("unexpected all vocation resolution: %+v", vocation)
+	}
+
+	knight, ok := validator.ResolveHighscoreVocation("ek")
+	if !ok {
+		t.Fatal("expected ek alias to resolve")
+	}
+	if knight.Name != "Knights" || knight.ProfessionID != 2 {
+		t.Fatalf("unexpected ek vocation resolution: %+v", knight)
+	}
+}
+
 func TestValidatePage(t *testing.T) {
 	if err := ValidatePage(1); err != nil {
 		t.Fatalf("expected page 1 to be valid, got error: %v", err)

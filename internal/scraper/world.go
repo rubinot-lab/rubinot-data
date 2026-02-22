@@ -116,6 +116,8 @@ func parsePlayers(doc *goquery.Document) []domain.PlayerOnline {
 
 func parseInt(s string) int {
 	s = strings.ReplaceAll(s, ",", "")
+	s = strings.ReplaceAll(s, ".", "")
+	s = strings.ReplaceAll(s, " ", "")
 	i, _ := strconv.Atoi(s)
 	return i
 }

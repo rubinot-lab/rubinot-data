@@ -24,7 +24,7 @@ type Validator struct {
 	townsByKey  map[string]Town
 
 	highscoreCategoriesByKey map[string]HighscoreCategory
-	vocationsByKey           map[string]string
+	vocationsByKey           map[string]HighscoreVocation
 }
 
 func NewValidator(worlds []World) *Validator {
@@ -32,7 +32,7 @@ func NewValidator(worlds []World) *Validator {
 		worldsByKey:              make(map[string]World),
 		townsByKey:               make(map[string]Town),
 		highscoreCategoriesByKey: make(map[string]HighscoreCategory),
-		vocationsByKey:           make(map[string]string),
+		vocationsByKey:           make(map[string]HighscoreVocation),
 	}
 
 	for _, world := range worlds {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -57,6 +58,11 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/worlds", handleEndpoint(getWorlds))
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getWorld(c, validator)
+		}))
+		v1.GET("/highscores/:world", redirectHighscoresWorld)
+		v1.GET("/highscores/:world/:category", redirectHighscoresCategory)
+		v1.GET("/highscores/:world/:category/:vocation/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getHighscores(c, validator)
 		}))
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCharacter(c)
@@ -230,6 +236,66 @@ func getHouse(c *gin.Context, validator *validation.Validator) (endpointResult, 
 	return endpointResult{
 		PayloadKey: "house",
 		Payload:    house,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func redirectHighscoresWorld(c *gin.Context) {
+	world := strings.TrimSpace(c.Param("world"))
+	location := fmt.Sprintf("/v1/highscores/%s/experience/all/1", url.PathEscape(world))
+	c.Redirect(http.StatusFound, location)
+}
+
+func redirectHighscoresCategory(c *gin.Context) {
+	world := strings.TrimSpace(c.Param("world"))
+	category := strings.TrimSpace(c.Param("category"))
+	location := fmt.Sprintf("/v1/highscores/%s/%s/all/1", url.PathEscape(world), url.PathEscape(category))
+	c.Redirect(http.StatusFound, location)
+}
+
+func getHighscores(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	categoryInput := strings.TrimSpace(c.Param("category"))
+	vocationInput := strings.TrimSpace(c.Param("vocation"))
+	pageInput := strings.TrimSpace(c.Param("page"))
+
+	canonicalWorld, _, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	category, categoryOK := validator.ResolveHighscoreCategory(categoryInput)
+	if !categoryOK {
+		return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, "highscore category does not exist", nil)
+	}
+
+	vocation, vocationOK := validator.ResolveHighscoreVocation(vocationInput)
+	if !vocationOK {
+		return endpointResult{}, validation.NewError(validation.ErrorVocationDoesNotExist, "vocation does not exist", nil)
+	}
+
+	page, pageErr := validation.ParsePage(pageInput)
+	if pageErr != nil {
+		return endpointResult{}, pageErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	highscores, sourceURL, err := scraper.FetchHighscores(
+		c.Request.Context(),
+		baseURL,
+		canonicalWorld,
+		category,
+		vocation,
+		page,
+		scrapeFetchOptions(),
+	)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "highscores",
+		Payload:    highscores,
 		Sources:    []string{sourceURL},
 	}, nil
 }
