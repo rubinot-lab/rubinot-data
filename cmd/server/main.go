@@ -27,7 +27,10 @@ func main() {
 		}()
 	}
 
-	r := api.NewRouter()
+	r, err := api.NewRouter()
+	if err != nil {
+		log.Fatalf("router init failed: %v", err)
+	}
 	r.Use(otelgin.Middleware("rubinot-data"))
 
 	port := os.Getenv("PORT")
