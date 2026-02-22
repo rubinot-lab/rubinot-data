@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 
 	"github.com/gin-gonic/gin"
 	"github.com/giovannirco/rubinot-data/internal/api"
+	"github.com/giovannirco/rubinot-data/internal/observability"
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gin-gonic/gin/otelgin"
 )
 
 func main() {
@@ -15,7 +18,18 @@ func main() {
 	}
 	gin.SetMode(mode)
 
+	shutdownTracer, err := observability.InitTracer(context.Background())
+	if err != nil {
+		log.Printf("otel init failed: %v", err)
+	} else {
+		defer func() {
+			_ = shutdownTracer(context.Background())
+		}()
+	}
+
 	r := api.NewRouter()
+	r.Use(otelgin.Middleware("rubinot-data"))
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

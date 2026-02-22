@@ -9,15 +9,13 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/chromedp/cdproto/emulation"
-	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
+	"github.com/go-resty/resty/v2"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type FetchOptions struct {
-	Mode            string
-	BrowserPath     string
-	BrowserFallback bool
+	FlareSolverrURL string
+	MaxTimeoutMs    int
 }
 
 type PlayerOnline struct {
@@ -40,65 +38,102 @@ type WorldResult struct {
 	PlayersOnline []PlayerOnline `json:"players_online_list"`
 }
 
-func FetchWorld(baseURL, world string, opts FetchOptions) (WorldResult, string, error) {
+type flareSolverrRequest struct {
+	Cmd        string            `json:"cmd"`
+	URL        string            `json:"url"`
+	MaxTimeout int               `json:"maxTimeout,omitempty"`
+	Session    string            `json:"session,omitempty"`
+	Headers    map[string]string `json:"headers,omitempty"`
+}
+
+type flareSolverrResponse struct {
+	Status   string `json:"status"`
+	Message  string `json:"message"`
+	Solution struct {
+		Response string `json:"response"`
+		Status   int    `json:"status"`
+		URL      string `json:"url"`
+	} `json:"solution"`
+}
+
+func FetchWorld(ctx context.Context, baseURL, world string, opts FetchOptions) (WorldResult, string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchWorld")
+	defer span.End()
+
+	started := time.Now()
 	formatted := strings.Title(strings.ToLower(strings.TrimSpace(world)))
 	sourceURL := fmt.Sprintf("%s/?subtopic=worlds&world=%s", strings.TrimRight(baseURL, "/"), url.QueryEscape(formatted))
 
-	htmlBody, err := fetchBrowser(sourceURL, opts.BrowserPath)
+	if opts.FlareSolverrURL == "" {
+		opts.FlareSolverrURL = "http://flaresolverr.network.svc.cluster.local:8191/v1"
+	}
+	if opts.MaxTimeoutMs <= 0 {
+		opts.MaxTimeoutMs = 120000
+	}
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "world"),
+		attribute.String("rubinot.world", formatted),
+		attribute.String("rubinot.source_url", sourceURL),
+	)
+
+	htmlBody, err := fetchViaFlareSolverr(ctx, sourceURL, opts)
+	scrapeDuration.WithLabelValues("world").Observe(time.Since(started).Seconds())
 	if err != nil {
+		scrapeRequests.WithLabelValues("world", "error").Inc()
 		return WorldResult{}, sourceURL, err
 	}
+	scrapeRequests.WithLabelValues("world", "ok").Inc()
 
-	return parseWorldHTML(formatted, sourceURL, htmlBody)
+	parseStart := time.Now()
+	result, source, parseErr := parseWorldHTML(formatted, sourceURL, htmlBody)
+	parseDuration.WithLabelValues("world").Observe(time.Since(parseStart).Seconds())
+	if parseErr != nil {
+		return WorldResult{}, sourceURL, parseErr
+	}
+
+	return result, source, nil
 }
 
-func fetchBrowser(sourceURL, browserPath string) (string, error) {
-	if browserPath == "" {
-		browserPath = "/usr/bin/chromium-browser"
+func fetchViaFlareSolverr(ctx context.Context, sourceURL string, opts FetchOptions) (string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.fetchViaFlareSolverr")
+	defer span.End()
+
+	client := resty.New().SetTimeout(140 * time.Second)
+	payload := flareSolverrRequest{
+		Cmd:        "request.get",
+		URL:        sourceURL,
+		MaxTimeout: opts.MaxTimeoutMs,
+		Headers: map[string]string{
+			"User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
+			"Accept-Language": "en-US,en;q=0.9,pt-BR;q=0.8",
+		},
 	}
 
-	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
-		chromedp.ExecPath(browserPath),
-		chromedp.Flag("headless", true),
-		chromedp.Flag("disable-gpu", true),
-		chromedp.Flag("no-sandbox", true),
-		chromedp.Flag("disable-dev-shm-usage", true),
-		chromedp.Flag("disable-crash-reporter", true),
-		chromedp.Flag("disable-breakpad", true),
-		chromedp.Flag("no-first-run", true),
-		chromedp.Flag("no-default-browser-check", true),
-		chromedp.Flag("disable-blink-features", "AutomationControlled"),
-		chromedp.Flag("user-data-dir", "/tmp/chromium-data"),
-		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"),
-	)
-
-	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
-	defer cancel()
-
-	ctx, cancelCtx := chromedp.NewContext(allocCtx)
-	defer cancelCtx()
-
-	ctx, cancelTimeout := context.WithTimeout(ctx, 45*time.Second)
-	defer cancelTimeout()
-
-	var html string
-	err := chromedp.Run(ctx,
-		emulation.SetTimezoneOverride("UTC"),
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			_, err := page.AddScriptToEvaluateOnNewDocument(`Object.defineProperty(navigator, 'webdriver', {get: () => undefined});` ).Do(ctx)
-			return err
-		}),
-		chromedp.Navigate(sourceURL),
-		chromedp.Sleep(8*time.Second),
-		chromedp.WaitVisible("body", chromedp.ByQuery),
-		chromedp.OuterHTML("html", &html, chromedp.ByQuery),
-	)
+	var out flareSolverrResponse
+	res, err := client.R().
+		SetContext(ctx).
+		SetHeader("Content-Type", "application/json").
+		SetBody(payload).
+		SetResult(&out).
+		Post(opts.FlareSolverrURL)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("flaresolverr request failed: %w", err)
+	}
+	if res.StatusCode() != 200 {
+		return "", fmt.Errorf("flaresolverr returned non-200: %d", res.StatusCode())
+	}
+	if strings.ToLower(out.Status) != "ok" {
+		return "", fmt.Errorf("flaresolverr error: %s", out.Message)
+	}
+	if out.Solution.Status != 200 {
+		return "", fmt.Errorf("target returned non-200 via flaresolverr: %d", out.Solution.Status)
 	}
 
-	if strings.Contains(strings.ToLower(html), "just a moment") || strings.Contains(strings.ToLower(html), "cf-challenge") {
-		return "", fmt.Errorf("cloudflare challenge page still present after browser render")
+	html := out.Solution.Response
+	lower := strings.ToLower(html)
+	if strings.Contains(lower, "just a moment") || strings.Contains(lower, "challenge-platform") || strings.Contains(lower, "cf-challenge") {
+		return "", fmt.Errorf("cloudflare challenge page still present after flaresolverr")
 	}
 
 	return html, nil
