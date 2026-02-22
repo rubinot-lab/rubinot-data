@@ -82,6 +82,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getDeaths(c, validator)
 		}))
+		v1.GET("/banishments/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getBanishments(c, validator)
+		}))
 		v1.GET("/transfers", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getTransfers(c, validator)
 		}))
@@ -470,6 +473,43 @@ func getTransfers(c *gin.Context, validator *validation.Validator) (endpointResu
 	return endpointResult{
 		PayloadKey: "transfers",
 		Payload:    transfers,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getBanishments(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	page := 1
+	pageInput := strings.TrimSpace(c.Query("page"))
+	if pageInput != "" {
+		parsedPage, pageErr := validation.ParsePage(pageInput)
+		if pageErr != nil {
+			return endpointResult{}, pageErr
+		}
+		page = parsedPage
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	banishments, sourceURL, err := scraper.FetchBanishments(
+		c.Request.Context(),
+		baseURL,
+		canonicalWorld,
+		worldID,
+		page,
+		scrapeFetchOptions(),
+	)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "banishments",
+		Payload:    banishments,
 		Sources:    []string{sourceURL},
 	}, nil
 }
