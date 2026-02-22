@@ -58,6 +58,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getWorld(c, validator)
 		}))
+		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getCharacter(c)
+		}))
 		v1.GET("/house/:world/:house_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getHouse(c, validator)
 		}))
@@ -100,6 +103,26 @@ func getWorld(c *gin.Context, validator *validation.Validator) (endpointResult, 
 	return endpointResult{
 		PayloadKey: "world",
 		Payload:    world,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getCharacter(c *gin.Context) (endpointResult, error) {
+	characterInput := strings.TrimSpace(c.Param("name"))
+	canonicalName, validationErr := validation.IsCharacterNameValid(characterInput)
+	if validationErr != nil {
+		return endpointResult{}, validationErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	character, sourceURL, err := scraper.FetchCharacter(c.Request.Context(), baseURL, canonicalName, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "character",
+		Payload:    character,
 		Sources:    []string{sourceURL},
 	}, nil
 }
