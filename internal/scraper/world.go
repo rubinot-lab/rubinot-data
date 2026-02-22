@@ -10,6 +10,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
+	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -18,13 +19,13 @@ func FetchWorld(ctx context.Context, baseURL, world string, opts FetchOptions) (
 	defer span.End()
 
 	started := time.Now()
-	formatted := strings.Title(strings.ToLower(strings.TrimSpace(world)))
-	sourceURL := fmt.Sprintf("%s/?subtopic=worlds&world=%s", strings.TrimRight(baseURL, "/"), url.QueryEscape(formatted))
+	canonicalWorld := strings.TrimSpace(world)
+	sourceURL := fmt.Sprintf("%s/?subtopic=worlds&world=%s", strings.TrimRight(baseURL, "/"), url.QueryEscape(canonicalWorld))
 	client := NewClient(opts)
 
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "world"),
-		attribute.String("rubinot.world", formatted),
+		attribute.String("rubinot.world", canonicalWorld),
 		attribute.String("rubinot.source_url", sourceURL),
 	)
 
@@ -37,7 +38,7 @@ func FetchWorld(ctx context.Context, baseURL, world string, opts FetchOptions) (
 	scrapeRequests.WithLabelValues("world", "ok").Inc()
 
 	parseStart := time.Now()
-	result, source, parseErr := parseWorldHTML(formatted, sourceURL, htmlBody)
+	result, source, parseErr := parseWorldHTML(canonicalWorld, sourceURL, htmlBody)
 	parseDuration.WithLabelValues("world").Observe(time.Since(parseStart).Seconds())
 	if parseErr != nil {
 		return domain.WorldResult{}, sourceURL, parseErr
@@ -53,9 +54,19 @@ func parseWorldHTML(formatted, sourceURL, htmlBody string) (domain.WorldResult, 
 	}
 
 	result := domain.WorldResult{Name: formatted}
-	result.Info = parseWorldInfo(doc)
+	worldInfo, found, parseInfoErr := parseWorldInfo(doc)
+	if parseInfoErr != nil {
+		return domain.WorldResult{}, sourceURL, validation.NewError(validation.ErrorUpstreamUnknown, parseInfoErr.Error(), parseInfoErr)
+	}
+	if !found {
+		return domain.WorldResult{}, sourceURL, validation.NewError(validation.ErrorEntityNotFound, "world not found", nil)
+	}
+	result.Info = worldInfo
 	result.PlayersOnline = parsePlayers(doc)
 
+	if strings.EqualFold(result.Info.Status, "offline") {
+		result.PlayersOnline = []domain.PlayerOnline{}
+	}
 	if result.Info.PlayersOnline == 0 {
 		result.Info.PlayersOnline = len(result.PlayersOnline)
 	}
@@ -63,8 +74,10 @@ func parseWorldHTML(formatted, sourceURL, htmlBody string) (domain.WorldResult, 
 	return result, sourceURL, nil
 }
 
-func parseWorldInfo(doc *goquery.Document) domain.WorldInfo {
+func parseWorldInfo(doc *goquery.Document) (domain.WorldInfo, bool, error) {
 	info := domain.WorldInfo{}
+	found := false
+	var creationDateRaw string
 	doc.Find("tr").Each(func(_ int, tr *goquery.Selection) {
 		tds := tr.Find("td")
 		if tds.Length() != 2 {
@@ -75,6 +88,7 @@ func parseWorldInfo(doc *goquery.Document) domain.WorldInfo {
 		switch strings.ToLower(label) {
 		case "status":
 			info.Status = value
+			found = true
 		case "players online":
 			info.PlayersOnline = parseInt(value)
 		case "location":
@@ -82,10 +96,19 @@ func parseWorldInfo(doc *goquery.Document) domain.WorldInfo {
 		case "pvp type":
 			info.PVPType = value
 		case "creation date":
-			info.CreationDate = value
+			creationDateRaw = value
 		}
 	})
-	return info
+
+	if creationDateRaw != "" {
+		normalizedDate, err := parseRubinotDateToUTC(creationDateRaw)
+		if err != nil {
+			return domain.WorldInfo{}, false, fmt.Errorf("invalid world creation date %q: %w", creationDateRaw, err)
+		}
+		info.CreationDate = normalizedDate
+	}
+
+	return info, found, nil
 }
 
 func parsePlayers(doc *goquery.Document) []domain.PlayerOnline {

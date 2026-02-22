@@ -17,5 +17,5 @@ type WorldInfo struct {
 type WorldResult struct {
 	Name          string         `json:"name"`
 	Info          WorldInfo      `json:"info"`
-	PlayersOnline []PlayerOnline `json:"players_online_list"`
+	PlayersOnline []PlayerOnline `json:"players_online"`
 }

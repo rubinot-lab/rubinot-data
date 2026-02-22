@@ -198,17 +198,25 @@ func getHouses(c *gin.Context, validator *validation.Validator) (endpointResult,
 	worldInput := strings.TrimSpace(c.Param("world"))
 	townInput := strings.TrimSpace(c.Param("town"))
 
-	canonicalWorld, _, worldOK := validator.WorldExists(worldInput)
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
-	canonicalTown, _, townOK := validator.TownExists(townInput)
+	canonicalTown, townID, townOK := validator.TownExists(townInput)
 	if !townOK {
 		return endpointResult{}, validation.NewError(validation.ErrorTownDoesNotExist, "town does not exist", nil)
 	}
 
 	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	houses, sourceURL, err := scraper.FetchHouses(c.Request.Context(), baseURL, canonicalWorld, canonicalTown, scrapeFetchOptions())
+	houses, sourceURL, err := scraper.FetchHouses(
+		c.Request.Context(),
+		baseURL,
+		canonicalWorld,
+		worldID,
+		canonicalTown,
+		townID,
+		scrapeFetchOptions(),
+	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
