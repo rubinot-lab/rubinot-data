@@ -78,6 +78,38 @@ func ParseLevelFilter(raw string) (int, error) {
 	return level, nil
 }
 
+func ParseMonth(raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, nil
+	}
+
+	month, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, NewError(ErrorMonthInvalid, fmt.Sprintf("invalid month value: %s", raw), err)
+	}
+	if month < 1 || month > 12 {
+		return 0, NewError(ErrorMonthInvalid, "month must be between 1 and 12", nil)
+	}
+	return month, nil
+}
+
+func ParseYear(raw string) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, nil
+	}
+
+	year, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, NewError(ErrorYearInvalid, fmt.Sprintf("invalid year value: %s", raw), err)
+	}
+	if year <= 2000 {
+		return 0, NewError(ErrorYearInvalid, "year must be greater than 2000", nil)
+	}
+	return year, nil
+}
+
 func ParsePvPOnlyFilter(raw string) (value bool, provided bool, err error) {
 	normalized := strings.ToLower(strings.TrimSpace(raw))
 	switch normalized {

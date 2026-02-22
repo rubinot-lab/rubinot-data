@@ -79,6 +79,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/news/newsticker", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getNewsNewsticker(c)
 		}))
+		v1.GET("/events/schedule", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getEventsSchedule(c)
+		}))
 		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getDeaths(c, validator)
 		}))
@@ -421,6 +424,37 @@ func getNewsNewsticker(c *gin.Context) (endpointResult, error) {
 	return endpointResult{
 		PayloadKey: "newslist",
 		Payload:    newsList,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getEventsSchedule(c *gin.Context) (endpointResult, error) {
+	month, monthErr := validation.ParseMonth(c.Query("month"))
+	if monthErr != nil {
+		return endpointResult{}, monthErr
+	}
+
+	year, yearErr := validation.ParseYear(c.Query("year"))
+	if yearErr != nil {
+		return endpointResult{}, yearErr
+	}
+
+	if month > 0 && year == 0 {
+		return endpointResult{}, validation.NewError(validation.ErrorYearInvalid, "year is required when month is provided", nil)
+	}
+	if year > 0 && month == 0 {
+		return endpointResult{}, validation.NewError(validation.ErrorMonthInvalid, "month is required when year is provided", nil)
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	events, sourceURL, err := scraper.FetchEventsSchedule(c.Request.Context(), baseURL, month, year, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "events",
+		Payload:    events,
 		Sources:    []string{sourceURL},
 	}, nil
 }

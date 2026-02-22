@@ -263,6 +263,54 @@ func TestParseLevelFilter(t *testing.T) {
 	assertValidationCode(t, err, ErrorLevelFilterInvalid)
 }
 
+func TestParseMonth(t *testing.T) {
+	month, err := ParseMonth("")
+	if err != nil {
+		t.Fatalf("expected empty month to be optional, got %v", err)
+	}
+	if month != 0 {
+		t.Fatalf("expected empty month=0, got %d", month)
+	}
+
+	month, err = ParseMonth("2")
+	if err != nil {
+		t.Fatalf("expected month 2 to parse successfully, got %v", err)
+	}
+	if month != 2 {
+		t.Fatalf("expected month=2, got %d", month)
+	}
+
+	_, err = ParseMonth("13")
+	assertValidationCode(t, err, ErrorMonthInvalid)
+
+	_, err = ParseMonth("abc")
+	assertValidationCode(t, err, ErrorMonthInvalid)
+}
+
+func TestParseYear(t *testing.T) {
+	year, err := ParseYear("")
+	if err != nil {
+		t.Fatalf("expected empty year to be optional, got %v", err)
+	}
+	if year != 0 {
+		t.Fatalf("expected empty year=0, got %d", year)
+	}
+
+	year, err = ParseYear("2026")
+	if err != nil {
+		t.Fatalf("expected year 2026 to parse successfully, got %v", err)
+	}
+	if year != 2026 {
+		t.Fatalf("expected year=2026, got %d", year)
+	}
+
+	_, err = ParseYear("2000")
+	assertValidationCode(t, err, ErrorYearInvalid)
+
+	_, err = ParseYear("abc")
+	assertValidationCode(t, err, ErrorYearInvalid)
+}
+
 func TestParsePvPOnlyFilter(t *testing.T) {
 	value, provided, err := ParsePvPOnlyFilter("")
 	if err != nil {
