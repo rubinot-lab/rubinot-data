@@ -54,6 +54,7 @@ func NewRouter() (*gin.Engine, error) {
 
 	v1 := router.Group("/v1")
 	{
+		v1.GET("/worlds", handleEndpoint(getWorlds))
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getWorld(c, validator)
 		}))
@@ -63,6 +64,21 @@ func NewRouter() (*gin.Engine, error) {
 	}
 
 	return router, nil
+}
+
+func getWorlds(c *gin.Context) (endpointResult, error) {
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+
+	worlds, sourceURL, err := scraper.FetchWorlds(c.Request.Context(), baseURL, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "worlds",
+		Payload:    worlds,
+		Sources:    []string{sourceURL},
+	}, nil
 }
 
 func getWorld(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
