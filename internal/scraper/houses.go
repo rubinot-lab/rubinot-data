@@ -8,27 +8,11 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/giovannirco/rubinot-data/internal/domain"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-type HouseEntry struct {
-	HouseID     int    `json:"house_id"`
-	Name        string `json:"name"`
-	Size        int    `json:"size"`
-	Rent        int    `json:"rent"`
-	Status      string `json:"status"`
-	IsRented    bool   `json:"rented"`
-	IsAuctioned bool   `json:"auctioned"`
-}
-
-type HousesResult struct {
-	World         string       `json:"world"`
-	Town          string       `json:"town"`
-	HouseList     []HouseEntry `json:"house_list"`
-	GuildhallList []HouseEntry `json:"guildhall_list"`
-}
-
-func FetchHouses(ctx context.Context, baseURL, world, town string, opts FetchOptions) (HousesResult, string, error) {
+func FetchHouses(ctx context.Context, baseURL, world, town string, opts FetchOptions) (domain.HousesResult, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchHouses")
 	defer span.End()
 
@@ -53,30 +37,30 @@ func FetchHouses(ctx context.Context, baseURL, world, town string, opts FetchOpt
 	if err != nil {
 		scrapeRequests.WithLabelValues("houses", "error").Inc()
 		scrapeDuration.WithLabelValues("houses").Observe(time.Since(started).Seconds())
-		return HousesResult{}, houseURL, err
+		return domain.HousesResult{}, houseURL, err
 	}
 	guildHTML, err := client.Fetch(ctx, guildhallURL)
 	scrapeDuration.WithLabelValues("houses").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("houses", "error").Inc()
-		return HousesResult{}, houseURL, err
+		return domain.HousesResult{}, houseURL, err
 	}
 
 	parseStart := time.Now()
 	houses, err := parseHouseRows(housesHTML)
 	if err != nil {
 		scrapeRequests.WithLabelValues("houses", "error").Inc()
-		return HousesResult{}, houseURL, err
+		return domain.HousesResult{}, houseURL, err
 	}
 	guildhalls, err := parseHouseRows(guildHTML)
 	if err != nil {
 		scrapeRequests.WithLabelValues("houses", "error").Inc()
-		return HousesResult{}, houseURL, err
+		return domain.HousesResult{}, houseURL, err
 	}
 	parseDuration.WithLabelValues("houses").Observe(time.Since(parseStart).Seconds())
 	scrapeRequests.WithLabelValues("houses", "ok").Inc()
 
-	return HousesResult{
+	return domain.HousesResult{
 		World:         formattedWorld,
 		Town:          formattedTown,
 		HouseList:     houses,
@@ -84,13 +68,13 @@ func FetchHouses(ctx context.Context, baseURL, world, town string, opts FetchOpt
 	}, houseURL, nil
 }
 
-func parseHouseRows(html string) ([]HouseEntry, error) {
+func parseHouseRows(html string) ([]domain.HouseEntry, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
 	if err != nil {
 		return nil, err
 	}
 
-	out := make([]HouseEntry, 0)
+	out := make([]domain.HouseEntry, 0)
 	doc.Find(".TableContentContainer .TableContent tr").Each(func(_ int, tr *goquery.Selection) {
 		tds := tr.Find("td")
 		if tds.Length() < 4 {
@@ -111,7 +95,7 @@ func parseHouseRows(html string) ([]HouseEntry, error) {
 			houseID = parseInt(v)
 		}
 
-		entry := HouseEntry{
+		entry := domain.HouseEntry{
 			HouseID:     houseID,
 			Name:        name,
 			Size:        parseInt(sizeText),

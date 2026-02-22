@@ -9,30 +9,11 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
+	"github.com/giovannirco/rubinot-data/internal/domain"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-type PlayerOnline struct {
-	Name     string `json:"name"`
-	Level    int    `json:"level"`
-	Vocation string `json:"vocation"`
-}
-
-type WorldInfo struct {
-	Status        string `json:"status,omitempty"`
-	PlayersOnline int    `json:"players_online"`
-	Location      string `json:"location,omitempty"`
-	PVPType       string `json:"pvp_type,omitempty"`
-	CreationDate  string `json:"creation_date,omitempty"`
-}
-
-type WorldResult struct {
-	Name          string         `json:"name"`
-	Info          WorldInfo      `json:"info"`
-	PlayersOnline []PlayerOnline `json:"players_online_list"`
-}
-
-func FetchWorld(ctx context.Context, baseURL, world string, opts FetchOptions) (WorldResult, string, error) {
+func FetchWorld(ctx context.Context, baseURL, world string, opts FetchOptions) (domain.WorldResult, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchWorld")
 	defer span.End()
 
@@ -51,7 +32,7 @@ func FetchWorld(ctx context.Context, baseURL, world string, opts FetchOptions) (
 	scrapeDuration.WithLabelValues("world").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("world", "error").Inc()
-		return WorldResult{}, sourceURL, err
+		return domain.WorldResult{}, sourceURL, err
 	}
 	scrapeRequests.WithLabelValues("world", "ok").Inc()
 
@@ -59,19 +40,19 @@ func FetchWorld(ctx context.Context, baseURL, world string, opts FetchOptions) (
 	result, source, parseErr := parseWorldHTML(formatted, sourceURL, htmlBody)
 	parseDuration.WithLabelValues("world").Observe(time.Since(parseStart).Seconds())
 	if parseErr != nil {
-		return WorldResult{}, sourceURL, parseErr
+		return domain.WorldResult{}, sourceURL, parseErr
 	}
 
 	return result, source, nil
 }
 
-func parseWorldHTML(formatted, sourceURL, htmlBody string) (WorldResult, string, error) {
+func parseWorldHTML(formatted, sourceURL, htmlBody string) (domain.WorldResult, string, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
 	if err != nil {
-		return WorldResult{}, sourceURL, err
+		return domain.WorldResult{}, sourceURL, err
 	}
 
-	result := WorldResult{Name: formatted}
+	result := domain.WorldResult{Name: formatted}
 	result.Info = parseWorldInfo(doc)
 	result.PlayersOnline = parsePlayers(doc)
 
@@ -82,8 +63,8 @@ func parseWorldHTML(formatted, sourceURL, htmlBody string) (WorldResult, string,
 	return result, sourceURL, nil
 }
 
-func parseWorldInfo(doc *goquery.Document) WorldInfo {
-	info := WorldInfo{}
+func parseWorldInfo(doc *goquery.Document) domain.WorldInfo {
+	info := domain.WorldInfo{}
 	doc.Find("tr").Each(func(_ int, tr *goquery.Selection) {
 		tds := tr.Find("td")
 		if tds.Length() != 2 {
@@ -107,8 +88,8 @@ func parseWorldInfo(doc *goquery.Document) WorldInfo {
 	return info
 }
 
-func parsePlayers(doc *goquery.Document) []PlayerOnline {
-	out := make([]PlayerOnline, 0)
+func parsePlayers(doc *goquery.Document) []domain.PlayerOnline {
+	out := make([]domain.PlayerOnline, 0)
 	doc.Find("table").EachWithBreak(func(_ int, table *goquery.Selection) bool {
 		headers := strings.ToLower(strings.Join(strings.Fields(table.Find("tr").First().Text()), " "))
 		if !(strings.Contains(headers, "name") && strings.Contains(headers, "level") && strings.Contains(headers, "vocation")) {
@@ -126,7 +107,7 @@ func parsePlayers(doc *goquery.Document) []PlayerOnline {
 			if name == "" || lvl <= 0 || voc == "" {
 				return
 			}
-			out = append(out, PlayerOnline{Name: name, Level: lvl, Vocation: voc})
+			out = append(out, domain.PlayerOnline{Name: name, Level: lvl, Vocation: voc})
 		})
 		return false
 	})
