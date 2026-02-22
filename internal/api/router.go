@@ -67,6 +67,18 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/killstatistics/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getKillstatistics(c, validator)
 		}))
+		v1.GET("/news/id/:news_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getNewsByID(c)
+		}))
+		v1.GET("/news/archive", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getNewsArchive(c)
+		}))
+		v1.GET("/news/latest", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getNewsLatest(c)
+		}))
+		v1.GET("/news/newsticker", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getNewsNewsticker(c)
+		}))
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCharacter(c)
 		}))
@@ -325,6 +337,73 @@ func getKillstatistics(c *gin.Context, validator *validation.Validator) (endpoin
 	return endpointResult{
 		PayloadKey: "killstatistics",
 		Payload:    killstatistics,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getNewsByID(c *gin.Context) (endpointResult, error) {
+	newsIDInput := strings.TrimSpace(c.Param("news_id"))
+	newsID, parseErr := validation.ParseNewsID(newsIDInput)
+	if parseErr != nil {
+		return endpointResult{}, parseErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	news, sources, err := scraper.FetchNewsByID(c.Request.Context(), baseURL, newsID, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "news",
+		Payload:    news,
+		Sources:    sources,
+	}, nil
+}
+
+func getNewsArchive(c *gin.Context) (endpointResult, error) {
+	archiveDays, daysErr := validation.ParseArchiveDays(c.Query("days"), 90)
+	if daysErr != nil {
+		return endpointResult{}, daysErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	newsList, sourceURL, err := scraper.FetchNewsArchive(c.Request.Context(), baseURL, archiveDays, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "newslist",
+		Payload:    newsList,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getNewsLatest(c *gin.Context) (endpointResult, error) {
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	newsList, sourceURL, err := scraper.FetchNewsLatest(c.Request.Context(), baseURL, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "newslist",
+		Payload:    newsList,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getNewsNewsticker(c *gin.Context) (endpointResult, error) {
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	newsList, sourceURL, err := scraper.FetchNewsTicker(c.Request.Context(), baseURL, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "newslist",
+		Payload:    newsList,
 		Sources:    []string{sourceURL},
 	}, nil
 }

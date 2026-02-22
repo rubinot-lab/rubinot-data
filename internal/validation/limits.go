@@ -34,3 +34,30 @@ func ParseHouseID(raw string) (int, error) {
 	}
 	return houseID, nil
 }
+
+func ParseNewsID(raw string) (int, error) {
+	newsID, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return 0, NewError(ErrorNewsIDInvalid, fmt.Sprintf("invalid news_id value: %s", raw), err)
+	}
+	if newsID <= 0 {
+		return 0, NewError(ErrorNewsIDInvalid, "news_id must be greater than 0", nil)
+	}
+	return newsID, nil
+}
+
+func ParseArchiveDays(raw string, fallback int) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return fallback, nil
+	}
+
+	days, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, NewError(ErrorArchiveDaysInvalid, fmt.Sprintf("invalid archive days value: %s", raw), err)
+	}
+	if days <= 0 {
+		return 0, NewError(ErrorArchiveDaysInvalid, "archive days must be greater than 0", nil)
+	}
+	return days, nil
+}

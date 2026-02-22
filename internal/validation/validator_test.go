@@ -199,6 +199,46 @@ func TestParseHouseID(t *testing.T) {
 	assertValidationCode(t, err, ErrorHouseIDInvalid)
 }
 
+func TestParseNewsID(t *testing.T) {
+	id, err := ParseNewsID("140")
+	if err != nil {
+		t.Fatalf("expected news id to parse successfully, got: %v", err)
+	}
+	if id != 140 {
+		t.Fatalf("expected news id 140, got %d", id)
+	}
+
+	_, err = ParseNewsID("0")
+	assertValidationCode(t, err, ErrorNewsIDInvalid)
+
+	_, err = ParseNewsID("abc")
+	assertValidationCode(t, err, ErrorNewsIDInvalid)
+}
+
+func TestParseArchiveDays(t *testing.T) {
+	days, err := ParseArchiveDays("", 90)
+	if err != nil {
+		t.Fatalf("expected empty archive days to fallback, got: %v", err)
+	}
+	if days != 90 {
+		t.Fatalf("expected fallback archive days 90, got %d", days)
+	}
+
+	days, err = ParseArchiveDays("30", 90)
+	if err != nil {
+		t.Fatalf("expected archive days to parse, got: %v", err)
+	}
+	if days != 30 {
+		t.Fatalf("expected archive days 30, got %d", days)
+	}
+
+	_, err = ParseArchiveDays("0", 90)
+	assertValidationCode(t, err, ErrorArchiveDaysInvalid)
+
+	_, err = ParseArchiveDays("abc", 90)
+	assertValidationCode(t, err, ErrorArchiveDaysInvalid)
+}
+
 func testValidator() *Validator {
 	return NewValidator([]World{
 		{ID: 15, Name: "Belaria"},
