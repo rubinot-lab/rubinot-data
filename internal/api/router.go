@@ -61,6 +61,12 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCharacter(c)
 		}))
+		v1.GET("/guild/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getGuild(c)
+		}))
+		v1.GET("/guilds/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getGuilds(c, validator)
+		}))
 		v1.GET("/house/:world/:house_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getHouse(c, validator)
 		}))
@@ -123,6 +129,46 @@ func getCharacter(c *gin.Context) (endpointResult, error) {
 	return endpointResult{
 		PayloadKey: "character",
 		Payload:    character,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getGuild(c *gin.Context) (endpointResult, error) {
+	guildInput := strings.TrimSpace(c.Param("name"))
+	canonicalName, validationErr := validation.IsGuildNameValid(guildInput)
+	if validationErr != nil {
+		return endpointResult{}, validationErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	guild, sourceURL, err := scraper.FetchGuild(c.Request.Context(), baseURL, canonicalName, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "guild",
+		Payload:    guild,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getGuilds(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	guilds, sourceURL, err := scraper.FetchGuilds(c.Request.Context(), baseURL, canonicalWorld, worldID, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "guilds",
+		Payload:    guilds,
 		Sources:    []string{sourceURL},
 	}, nil
 }
