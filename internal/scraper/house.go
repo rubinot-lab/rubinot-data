@@ -11,6 +11,8 @@ import (
 	"github.com/giovannirco/rubinot-data/internal/domain"
 	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 var (
@@ -47,6 +49,10 @@ func FetchHouse(
 	)
 
 	for _, town := range towns {
+		if ctx.Err() != nil {
+			return domain.HouseResult{}, lastSourceURL, validation.NewError(validation.ErrorFlareSolverrTimeout, fmt.Sprintf("house lookup cancelled: %v", ctx.Err()), ctx.Err())
+		}
+
 		sourceURL := buildHouseDetailsURL(baseURL, worldID, town.ID, houseID)
 		lastSourceURL = sourceURL
 
@@ -159,7 +165,7 @@ func extractHouseOwner(content *goquery.Selection, normalizedText string) *domai
 	}
 	owner.Vocation = findRegexString(houseVocationPattern, normalizedText)
 	if owner.Vocation != "" {
-		owner.Vocation = strings.Title(strings.ToLower(owner.Vocation))
+		owner.Vocation = cases.Title(language.English).String(strings.ToLower(owner.Vocation))
 	}
 	return owner
 }

@@ -56,12 +56,21 @@ type flareSolverrResponse struct {
 var (
 	scrapeSemaphoreOnce sync.Once
 	scrapeSemaphore     chan struct{}
+	sharedHTTPOnce      sync.Once
+	sharedHTTPClient    *resty.Client
 )
+
+func sharedRestyClient() *resty.Client {
+	sharedHTTPOnce.Do(func() {
+		sharedHTTPClient = resty.New().SetTimeout(defaultRequestTimeout).SetRetryCount(0)
+	})
+	return sharedHTTPClient
+}
 
 func NewClient(opts FetchOptions) *Client {
 	normalized := normalizeFetchOptions(opts)
 	return &Client{
-		httpClient:      resty.New().SetTimeout(defaultRequestTimeout).SetRetryCount(0),
+		httpClient:      sharedRestyClient(),
 		flareSolverrURL: normalized.FlareSolverrURL,
 		maxTimeoutMs:    normalized.MaxTimeoutMs,
 		semaphore:       sharedScrapeSemaphore(),
@@ -264,4 +273,6 @@ func envInt(key string, fallback int) int {
 func resetSharedScrapeSemaphoreForTests() {
 	scrapeSemaphore = nil
 	scrapeSemaphoreOnce = sync.Once{}
+	sharedHTTPClient = nil
+	sharedHTTPOnce = sync.Once{}
 }
