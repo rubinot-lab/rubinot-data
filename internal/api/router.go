@@ -17,12 +17,19 @@ import (
 
 const (
 	defaultRubinotBaseURL  = "https://www.rubinot.com.br"
-	defaultFlareSolverrURL = "http://flaresolverr.network.svc.cluster.local:8191/v1"
 	defaultScrapeTimeoutMS = 120000
 	defaultServiceVersion  = "dev"
 )
 
+var (
+	resolvedBaseURL string
+	resolvedOpts    scraper.FetchOptions
+)
+
 func NewRouter() (*gin.Engine, error) {
+	resolvedBaseURL = getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	resolvedOpts = scrapeFetchOptions()
+
 	validator, err := bootstrapValidator(context.Background())
 	if err != nil {
 		return nil, err
@@ -122,9 +129,7 @@ func NewRouter() (*gin.Engine, error) {
 }
 
 func getWorlds(c *gin.Context) (endpointResult, error) {
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-
-	worlds, sourceURL, err := scraper.FetchWorlds(c.Request.Context(), baseURL, scrapeFetchOptions())
+	worlds, sourceURL, err := scraper.FetchWorlds(c.Request.Context(), resolvedBaseURL, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -143,8 +148,8 @@ func getWorld(c *gin.Context, validator *validation.Validator) (endpointResult, 
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	world, sourceURL, err := scraper.FetchWorld(c.Request.Context(), baseURL, canonicalWorld, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	world, sourceURL, err := scraper.FetchWorld(c.Request.Context(), baseURL, canonicalWorld, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -163,8 +168,8 @@ func getCharacter(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, validationErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	character, sourceURL, err := scraper.FetchCharacter(c.Request.Context(), baseURL, canonicalName, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	character, sourceURL, err := scraper.FetchCharacter(c.Request.Context(), baseURL, canonicalName, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -183,8 +188,8 @@ func getGuild(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, validationErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	guild, sourceURL, err := scraper.FetchGuild(c.Request.Context(), baseURL, canonicalName, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	guild, sourceURL, err := scraper.FetchGuild(c.Request.Context(), baseURL, canonicalName, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -203,8 +208,8 @@ func getGuilds(c *gin.Context, validator *validation.Validator) (endpointResult,
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	guilds, sourceURL, err := scraper.FetchGuilds(c.Request.Context(), baseURL, canonicalWorld, worldID, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	guilds, sourceURL, err := scraper.FetchGuilds(c.Request.Context(), baseURL, canonicalWorld, worldID, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -229,7 +234,7 @@ func getHouses(c *gin.Context, validator *validation.Validator) (endpointResult,
 		return endpointResult{}, validation.NewError(validation.ErrorTownDoesNotExist, "town does not exist", nil)
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	baseURL := resolvedBaseURL
 	houses, sourceURL, err := scraper.FetchHouses(
 		c.Request.Context(),
 		baseURL,
@@ -237,7 +242,7 @@ func getHouses(c *gin.Context, validator *validation.Validator) (endpointResult,
 		worldID,
 		canonicalTown,
 		townID,
-		scrapeFetchOptions(),
+		resolvedOpts,
 	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -264,7 +269,7 @@ func getHouse(c *gin.Context, validator *validation.Validator) (endpointResult, 
 		return endpointResult{}, parseErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	baseURL := resolvedBaseURL
 	house, sourceURL, err := scraper.FetchHouse(
 		c.Request.Context(),
 		baseURL,
@@ -272,7 +277,7 @@ func getHouse(c *gin.Context, validator *validation.Validator) (endpointResult, 
 		worldID,
 		houseID,
 		validator.AllTowns(),
-		scrapeFetchOptions(),
+		resolvedOpts,
 	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -324,7 +329,7 @@ func getHighscores(c *gin.Context, validator *validation.Validator) (endpointRes
 		return endpointResult{}, pageErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	baseURL := resolvedBaseURL
 	highscores, sourceURL, err := scraper.FetchHighscores(
 		c.Request.Context(),
 		baseURL,
@@ -332,7 +337,7 @@ func getHighscores(c *gin.Context, validator *validation.Validator) (endpointRes
 		category,
 		vocation,
 		page,
-		scrapeFetchOptions(),
+		resolvedOpts,
 	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -352,13 +357,13 @@ func getKillstatistics(c *gin.Context, validator *validation.Validator) (endpoin
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	baseURL := resolvedBaseURL
 	killstatistics, sourceURL, err := scraper.FetchKillstatistics(
 		c.Request.Context(),
 		baseURL,
 		canonicalWorld,
 		worldID,
-		scrapeFetchOptions(),
+		resolvedOpts,
 	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -378,8 +383,8 @@ func getNewsByID(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, parseErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	news, sources, err := scraper.FetchNewsByID(c.Request.Context(), baseURL, newsID, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	news, sources, err := scraper.FetchNewsByID(c.Request.Context(), baseURL, newsID, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: sources}, err
 	}
@@ -397,8 +402,8 @@ func getNewsArchive(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, daysErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	newsList, sourceURL, err := scraper.FetchNewsArchive(c.Request.Context(), baseURL, archiveDays, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	newsList, sourceURL, err := scraper.FetchNewsArchive(c.Request.Context(), baseURL, archiveDays, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -411,8 +416,8 @@ func getNewsArchive(c *gin.Context) (endpointResult, error) {
 }
 
 func getNewsLatest(c *gin.Context) (endpointResult, error) {
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	newsList, sourceURL, err := scraper.FetchNewsLatest(c.Request.Context(), baseURL, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	newsList, sourceURL, err := scraper.FetchNewsLatest(c.Request.Context(), baseURL, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -425,8 +430,8 @@ func getNewsLatest(c *gin.Context) (endpointResult, error) {
 }
 
 func getNewsNewsticker(c *gin.Context) (endpointResult, error) {
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	newsList, sourceURL, err := scraper.FetchNewsTicker(c.Request.Context(), baseURL, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	newsList, sourceURL, err := scraper.FetchNewsTicker(c.Request.Context(), baseURL, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -456,8 +461,8 @@ func getEventsSchedule(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, validation.NewError(validation.ErrorMonthInvalid, "month is required when year is provided", nil)
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	events, sourceURL, err := scraper.FetchEventsSchedule(c.Request.Context(), baseURL, month, year, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	events, sourceURL, err := scraper.FetchEventsSchedule(c.Request.Context(), baseURL, month, year, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -476,8 +481,8 @@ func getCurrentAuctions(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, pageErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	auctions, sourceURL, err := scraper.FetchCurrentAuctions(c.Request.Context(), baseURL, page, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	auctions, sourceURL, err := scraper.FetchCurrentAuctions(c.Request.Context(), baseURL, page, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -496,8 +501,8 @@ func getAuctionHistory(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, pageErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	auctions, sourceURL, err := scraper.FetchAuctionHistory(c.Request.Context(), baseURL, page, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	auctions, sourceURL, err := scraper.FetchAuctionHistory(c.Request.Context(), baseURL, page, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -516,8 +521,8 @@ func getAuctionDetail(c *gin.Context) (endpointResult, error) {
 		return endpointResult{}, idErr
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	auction, sources, err := scraper.FetchAuctionDetail(c.Request.Context(), baseURL, auctionID, scrapeFetchOptions())
+	baseURL := resolvedBaseURL
+	auction, sources, err := scraper.FetchAuctionDetail(c.Request.Context(), baseURL, auctionID, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: sources}, err
 	}
@@ -558,7 +563,7 @@ func getTransfers(c *gin.Context, validator *validation.Validator) (endpointResu
 		}
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	baseURL := resolvedBaseURL
 	transfers, sourceURL, err := scraper.FetchTransfers(
 		c.Request.Context(),
 		baseURL,
@@ -568,7 +573,7 @@ func getTransfers(c *gin.Context, validator *validation.Validator) (endpointResu
 			MinLevel:  minLevel,
 			Page:      page,
 		},
-		scrapeFetchOptions(),
+		resolvedOpts,
 	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -598,14 +603,14 @@ func getBanishments(c *gin.Context, validator *validation.Validator) (endpointRe
 		page = parsedPage
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	baseURL := resolvedBaseURL
 	banishments, sourceURL, err := scraper.FetchBanishments(
 		c.Request.Context(),
 		baseURL,
 		canonicalWorld,
 		worldID,
 		page,
-		scrapeFetchOptions(),
+		resolvedOpts,
 	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -641,7 +646,7 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 		pvpOnly = &pvpValue
 	}
 
-	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	baseURL := resolvedBaseURL
 	deaths, sourceURL, err := scraper.FetchDeaths(
 		c.Request.Context(),
 		baseURL,
@@ -652,7 +657,7 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 			MinLevel: levelFilter,
 			PvPOnly:  pvpOnly,
 		},
-		scrapeFetchOptions(),
+		resolvedOpts,
 	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -666,11 +671,11 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 }
 
 func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
-	baseURL := strings.TrimRight(getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL), "/")
+	baseURL := strings.TrimRight(resolvedBaseURL, "/")
 	sourceURL := fmt.Sprintf("%s/?subtopic=latestdeaths", baseURL)
 
 	started := time.Now()
-	html, err := scraper.NewClient(scrapeFetchOptions()).Fetch(ctx, sourceURL)
+	html, err := scraper.NewClient(resolvedOpts).Fetch(ctx, sourceURL)
 	if err != nil {
 		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
 		scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
@@ -693,7 +698,7 @@ func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 
 func scrapeFetchOptions() scraper.FetchOptions {
 	return scraper.FetchOptions{
-		FlareSolverrURL: getEnv("FLARESOLVERR_URL", defaultFlareSolverrURL),
+		FlareSolverrURL: getEnv("FLARESOLVERR_URL", ""),
 		MaxTimeoutMs:    getEnvInt("SCRAPE_MAX_TIMEOUT_MS", defaultScrapeTimeoutMS),
 	}
 }

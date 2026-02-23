@@ -84,7 +84,7 @@ func parseCharacterHTML(htmlBody string) (domain.CharacterResult, error) {
 			return domain.CharacterResult{}, parseErr
 		}
 		result.CharacterInfo = info
-		if result.CharacterInfo.IsBanned == false && isCharacterBanned(errorText) {
+		if !result.CharacterInfo.IsBanned && isCharacterBanned(errorText) {
 			result.CharacterInfo.IsBanned = true
 			result.CharacterInfo.BanReason = errorText
 		}
