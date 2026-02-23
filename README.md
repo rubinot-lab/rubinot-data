@@ -11,7 +11,7 @@ Go API that scrapes `rubinot.com.br` through FlareSolverr and exposes normalized
 
 ## Requirements
 
-- Go 1.24+
+- Go 1.23+
 - Docker (for FlareSolverr and local compose)
 
 ## Quick Start
