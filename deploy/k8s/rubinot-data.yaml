@@ -23,14 +23,18 @@ spec:
           env:
             - name: RUBINOT_BASE_URL
               value: https://www.rubinot.com.br
+            - name: FLARESOLVERR_URL
+              value: http://flaresolverr.network.svc.cluster.local:8191/v1
+            - name: SCRAPE_MAX_TIMEOUT_MS
+              value: "120000"
+            - name: SCRAPE_MAX_CONCURRENCY
+              value: "8"
             - name: GIN_MODE
               value: release
             - name: APP_VERSION
-              value: v0.1.0
-            - name: COLLECTOR_MODE
-              value: browser
-            - name: CHROMIUM_PATH
-              value: /usr/bin/chromium-browser
+              value: v0.2.0
+            - name: APP_COMMIT
+              value: unknown
           ports:
             - containerPort: 8080
           securityContext:
