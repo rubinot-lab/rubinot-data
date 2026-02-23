@@ -82,6 +82,15 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/events/schedule", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getEventsSchedule(c)
 		}))
+		v1.GET("/auctions/current/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getCurrentAuctions(c)
+		}))
+		v1.GET("/auctions/history/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAuctionHistory(c)
+		}))
+		v1.GET("/auctions/:id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAuctionDetail(c)
+		}))
 		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getDeaths(c, validator)
 		}))
@@ -456,6 +465,66 @@ func getEventsSchedule(c *gin.Context) (endpointResult, error) {
 		PayloadKey: "events",
 		Payload:    events,
 		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getCurrentAuctions(c *gin.Context) (endpointResult, error) {
+	pageInput := strings.TrimSpace(c.Param("page"))
+	page, pageErr := validation.ParsePage(pageInput)
+	if pageErr != nil {
+		return endpointResult{}, pageErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	auctions, sourceURL, err := scraper.FetchCurrentAuctions(c.Request.Context(), baseURL, page, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "auctions",
+		Payload:    auctions,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getAuctionHistory(c *gin.Context) (endpointResult, error) {
+	pageInput := strings.TrimSpace(c.Param("page"))
+	page, pageErr := validation.ParsePage(pageInput)
+	if pageErr != nil {
+		return endpointResult{}, pageErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	auctions, sourceURL, err := scraper.FetchAuctionHistory(c.Request.Context(), baseURL, page, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "auctions",
+		Payload:    auctions,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getAuctionDetail(c *gin.Context) (endpointResult, error) {
+	auctionIDInput := strings.TrimSpace(c.Param("id"))
+	auctionID, idErr := validation.ParseAuctionID(auctionIDInput)
+	if idErr != nil {
+		return endpointResult{}, idErr
+	}
+
+	baseURL := getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
+	auction, sources, err := scraper.FetchAuctionDetail(c.Request.Context(), baseURL, auctionID, scrapeFetchOptions())
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "auction",
+		Payload:    auction,
+		Sources:    sources,
 	}, nil
 }
 

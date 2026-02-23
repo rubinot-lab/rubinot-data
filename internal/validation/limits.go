@@ -46,6 +46,14 @@ func ParseNewsID(raw string) (int, error) {
 	return newsID, nil
 }
 
+func ParseAuctionID(raw string) (string, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", NewError(ErrorAuctionIDInvalid, "auction id cannot be empty", nil)
+	}
+	return value, nil
+}
+
 func ParseArchiveDays(raw string, fallback int) (int, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {

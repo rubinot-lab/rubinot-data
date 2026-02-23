@@ -215,6 +215,19 @@ func TestParseNewsID(t *testing.T) {
 	assertValidationCode(t, err, ErrorNewsIDInvalid)
 }
 
+func TestParseAuctionID(t *testing.T) {
+	auctionID, err := ParseAuctionID(" 165320 ")
+	if err != nil {
+		t.Fatalf("expected auction id to parse successfully, got: %v", err)
+	}
+	if auctionID != "165320" {
+		t.Fatalf("expected auction id 165320, got %q", auctionID)
+	}
+
+	_, err = ParseAuctionID("")
+	assertValidationCode(t, err, ErrorAuctionIDInvalid)
+}
+
 func TestParseArchiveDays(t *testing.T) {
 	days, err := ParseArchiveDays("", 90)
 	if err != nil {
