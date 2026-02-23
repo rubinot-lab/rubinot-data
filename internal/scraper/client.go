@@ -73,6 +73,7 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 	defer span.End()
 
 	if err := acquireSemaphore(ctx, c.semaphore); err != nil {
+		FlareSolverrRequests.WithLabelValues("timeout").Inc()
 		return "", validation.NewError(validation.ErrorFlareSolverrTimeout, fmt.Sprintf("flaresolverr timeout: %v", err), err)
 	}
 	defer releaseSemaphore(c.semaphore)
@@ -87,6 +88,7 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 		},
 	}
 
+	fsStarted := time.Now()
 	var out flareSolverrResponse
 	res, err := c.httpClient.R().
 		SetContext(ctx).
@@ -94,39 +96,101 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 		SetBody(payload).
 		SetResult(&out).
 		Post(c.flareSolverrURL)
+	FlareSolverrDuration.Observe(time.Since(fsStarted).Seconds())
+
 	if err != nil {
-		return "", mapClientError(err)
+		mapped := mapClientError(err)
+		if isTimeoutError(err) {
+			FlareSolverrRequests.WithLabelValues("timeout").Inc()
+		} else {
+			FlareSolverrRequests.WithLabelValues("error").Inc()
+		}
+		return "", mapped
 	}
 	if res.StatusCode() != http.StatusOK {
+		FlareSolverrRequests.WithLabelValues("error").Inc()
 		return "", validation.NewError(validation.ErrorFlareSolverrNon200, fmt.Sprintf("flaresolverr returned non-200: %d", res.StatusCode()), nil)
 	}
 	if strings.ToLower(out.Status) != "ok" {
 		code := validation.ErrorUpstreamUnknown
 		if isTimeoutText(out.Message) {
 			code = validation.ErrorFlareSolverrTimeout
+			FlareSolverrRequests.WithLabelValues("timeout").Inc()
+		} else {
+			FlareSolverrRequests.WithLabelValues("error").Inc()
 		}
 		return "", validation.NewError(code, fmt.Sprintf("flaresolverr error: %s", out.Message), nil)
 	}
+
+	UpstreamStatus.WithLabelValues(endpointFromURL(sourceURL), strconv.Itoa(out.Solution.Status)).Inc()
+
 	switch out.Solution.Status {
 	case http.StatusOK:
 	case http.StatusServiceUnavailable:
+		FlareSolverrRequests.WithLabelValues("ok").Inc()
+		UpstreamMaintenance.Inc()
 		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, fmt.Sprintf("target returned maintenance status via flaresolverr: %d", out.Solution.Status), nil)
 	case http.StatusForbidden:
+		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		return "", validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("target returned forbidden status via flaresolverr: %d", out.Solution.Status), nil)
 	default:
+		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		return "", validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("target returned non-200 via flaresolverr: %d", out.Solution.Status), nil)
 	}
 
 	html := out.Solution.Response
 	lowerHTML := strings.ToLower(html)
 	if strings.Contains(lowerHTML, "just a moment") || strings.Contains(lowerHTML, "cf-browser-verification") {
+		FlareSolverrRequests.WithLabelValues("cf_challenge").Inc()
+		CloudflareChallenges.Inc()
 		return "", validation.NewError(validation.ErrorCloudflareChallengePresent, "cloudflare challenge page still present after flaresolverr", nil)
 	}
 	if strings.Contains(lowerHTML, "maintenance") {
+		FlareSolverrRequests.WithLabelValues("ok").Inc()
+		UpstreamMaintenance.Inc()
 		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, "upstream maintenance mode detected", nil)
 	}
 
+	FlareSolverrRequests.WithLabelValues("ok").Inc()
 	return html, nil
+}
+
+func endpointFromURL(sourceURL string) string {
+	lower := strings.ToLower(sourceURL)
+	switch {
+	case strings.Contains(lower, "subtopic=worlds") && !strings.Contains(lower, "world="):
+		return "worlds"
+	case strings.Contains(lower, "subtopic=worlds") && strings.Contains(lower, "world="):
+		return "world"
+	case strings.Contains(lower, "subtopic=characters"):
+		return "character"
+	case strings.Contains(lower, "subtopic=guilds") && strings.Contains(lower, "guildname="):
+		return "guild"
+	case strings.Contains(lower, "subtopic=guilds"):
+		return "guilds"
+	case strings.Contains(lower, "subtopic=houses") && strings.Contains(lower, "houseid="):
+		return "house"
+	case strings.Contains(lower, "subtopic=houses"):
+		return "houses"
+	case strings.Contains(lower, "subtopic=highscores"):
+		return "highscores"
+	case strings.Contains(lower, "subtopic=killstatistics"):
+		return "killstatistics"
+	case strings.Contains(lower, "subtopic=latestdeaths"):
+		return "deaths"
+	case strings.Contains(lower, "subtopic=transferstatistics"):
+		return "transfers"
+	case strings.Contains(lower, "subtopic=bans"):
+		return "banishments"
+	case strings.Contains(lower, "subtopic=eventcalendar"):
+		return "events"
+	case strings.Contains(lower, "charactertrades"):
+		return "auctions"
+	case strings.Contains(lower, "/news"):
+		return "news"
+	default:
+		return "unknown"
+	}
 }
 
 func normalizeFetchOptions(opts FetchOptions) FetchOptions {

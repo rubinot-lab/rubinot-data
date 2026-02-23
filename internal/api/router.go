@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/giovannirco/rubinot-data/internal/scraper"
@@ -668,15 +669,24 @@ func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 	baseURL := strings.TrimRight(getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL), "/")
 	sourceURL := fmt.Sprintf("%s/?subtopic=latestdeaths", baseURL)
 
+	started := time.Now()
 	html, err := scraper.NewClient(scrapeFetchOptions()).Fetch(ctx, sourceURL)
 	if err != nil {
+		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
+		scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
 		return nil, err
 	}
 
 	worlds, err := validation.ParseLatestDeathsWorldOptions(html)
 	if err != nil {
+		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
+		scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
 		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator world bootstrap failed: %v", err), err)
 	}
+
+	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
+	scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
+	scraper.WorldsDiscovered.Set(float64(len(worlds)))
 
 	return validation.NewValidator(worlds), nil
 }

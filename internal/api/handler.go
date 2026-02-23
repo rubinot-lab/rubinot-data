@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/giovannirco/rubinot-data/internal/validation"
@@ -22,6 +23,13 @@ func handleEndpoint(handler endpointHandler) gin.HandlerFunc {
 		if err != nil {
 			errorCode := resolveErrorCode(err)
 			httpCode := statusCodeFromErrorCode(errorCode)
+			if httpCode == http.StatusBadRequest {
+				route := c.FullPath()
+				if route == "" {
+					route = "unknown"
+				}
+				validationRejections.WithLabelValues(route, strconv.Itoa(errorCode)).Inc()
+			}
 			c.JSON(httpCode, errorEnvelope(httpCode, errorCode, err.Error(), result.Sources))
 			return
 		}
