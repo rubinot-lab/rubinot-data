@@ -108,10 +108,11 @@ func parseTransfersHTML(filters TransfersFilters, html string) (domain.Transfers
 		return domain.TransfersResult{}, validation.NewError(validation.ErrorUpstreamUnknown, "transfers table not found", nil)
 	}
 
-	table.Find("tr[bgcolor]").Each(func(_ int, row *goquery.Selection) {
+	var parseErr error
+	table.Find("tr[bgcolor]").EachWithBreak(func(_ int, row *goquery.Selection) bool {
 		tds := row.Find("td")
 		if tds.Length() < 5 {
-			return
+			return true
 		}
 
 		playerName := strings.TrimSpace(tds.Eq(0).Text())
@@ -120,13 +121,13 @@ func parseTransfersHTML(filters TransfersFilters, html string) (domain.Transfers
 		destinationWorld := strings.TrimSpace(tds.Eq(3).Text())
 		dateRaw := strings.TrimSpace(tds.Eq(4).Text())
 		if playerName == "" || dateRaw == "" {
-			return
+			return true
 		}
 
 		transferDate, dateErr := parseRubinotDateTimeToUTC(dateRaw)
 		if dateErr != nil {
-			err = validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("invalid transfer date %q", dateRaw), dateErr)
-			return
+			parseErr = validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("invalid transfer date %q", dateRaw), dateErr)
+			return false
 		}
 
 		entry := domain.TransferEntry{
@@ -137,10 +138,11 @@ func parseTransfersHTML(filters TransfersFilters, html string) (domain.Transfers
 			TransferDate:     transferDate,
 		}
 		result.Entries = append(result.Entries, entry)
+		return true
 	})
 
-	if err != nil {
-		return domain.TransfersResult{}, err
+	if parseErr != nil {
+		return domain.TransfersResult{}, parseErr
 	}
 
 	total := parseTransfersTotal(doc)

@@ -226,6 +226,18 @@ func TestParseAuctionID(t *testing.T) {
 
 	_, err = ParseAuctionID("")
 	assertValidationCode(t, err, ErrorAuctionIDInvalid)
+
+	_, err = ParseAuctionID("../../admin")
+	assertValidationCode(t, err, ErrorAuctionIDInvalid)
+
+	_, err = ParseAuctionID("abc")
+	assertValidationCode(t, err, ErrorAuctionIDInvalid)
+
+	_, err = ParseAuctionID("0")
+	assertValidationCode(t, err, ErrorAuctionIDInvalid)
+
+	_, err = ParseAuctionID("-1")
+	assertValidationCode(t, err, ErrorAuctionIDInvalid)
 }
 
 func TestParseArchiveDays(t *testing.T) {

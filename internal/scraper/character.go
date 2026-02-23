@@ -140,11 +140,12 @@ func findContainerByHeaders(doc *goquery.Document, expected []string) *goquery.S
 
 func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, error) {
 	info := domain.CharacterInfo{}
+	var parseErr error
 
-	container.Find(".TableContent tr").Each(func(_ int, row *goquery.Selection) {
+	container.Find(".TableContent tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
 		cells := row.Find("td")
 		if cells.Length() < 2 {
-			return
+			return true
 		}
 
 		label := normalizeLabel(cells.Eq(0).Text())
@@ -202,10 +203,10 @@ func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, err
 			info.Guild = parseCharacterGuild(valueCell, valueText)
 
 		case "last login":
-			lastLogin, err := parseRubinotDateTimeToUTC(valueText)
-			if err != nil {
-				info.LastLogin = "__INVALID__" + err.Error()
-				return
+			lastLogin, dateErr := parseRubinotDateTimeToUTC(valueText)
+			if dateErr != nil {
+				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
+				return false
 			}
 			info.LastLogin = lastLogin
 
@@ -213,23 +214,21 @@ func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, err
 			info.AccountStatus = valueText
 
 		case "deletion date":
-			deletionDate, err := parseRubinotDateTimeToUTC(valueText)
-			if err != nil {
-				info.DeletionDate = "__INVALID__" + err.Error()
-				return
+			deletionDate, dateErr := parseRubinotDateTimeToUTC(valueText)
+			if dateErr != nil {
+				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
+				return false
 			}
 			info.DeletionDate = deletionDate
 
 		case "comment":
 			info.Comment = valueText
 		}
+		return true
 	})
 
-	if strings.HasPrefix(info.LastLogin, "__INVALID__") {
-		return domain.CharacterInfo{}, validation.NewError(validation.ErrorUpstreamUnknown, strings.TrimPrefix(info.LastLogin, "__INVALID__"), nil)
-	}
-	if strings.HasPrefix(info.DeletionDate, "__INVALID__") {
-		return domain.CharacterInfo{}, validation.NewError(validation.ErrorUpstreamUnknown, strings.TrimPrefix(info.DeletionDate, "__INVALID__"), nil)
+	if parseErr != nil {
+		return domain.CharacterInfo{}, parseErr
 	}
 
 	return info, nil
@@ -304,29 +303,31 @@ func parseCharacterDeathText(timeUTC, deathText string) (domain.CharacterDeath, 
 
 func parseAccountInformation(container *goquery.Selection) (domain.AccountInformation, error) {
 	account := domain.AccountInformation{}
+	var parseErr error
 
-	container.Find(".TableContent tr").Each(func(_ int, row *goquery.Selection) {
+	container.Find(".TableContent tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
 		cells := row.Find("td")
 		if cells.Length() < 2 {
-			return
+			return true
 		}
 		label := strings.ToLower(normalizeLabel(cells.Eq(0).Text()))
 		value := normalizeText(cells.Eq(1).Text())
 		switch label {
 		case "created":
-			created, err := parseRubinotDateTimeToUTC(value)
-			if err != nil {
-				account.Created = "__INVALID__" + err.Error()
-				return
+			created, dateErr := parseRubinotDateTimeToUTC(value)
+			if dateErr != nil {
+				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
+				return false
 			}
 			account.Created = created
 		case "loyalty title":
 			account.LoyaltyTitle = value
 		}
+		return true
 	})
 
-	if strings.HasPrefix(account.Created, "__INVALID__") {
-		return domain.AccountInformation{}, validation.NewError(validation.ErrorUpstreamUnknown, strings.TrimPrefix(account.Created, "__INVALID__"), nil)
+	if parseErr != nil {
+		return domain.AccountInformation{}, parseErr
 	}
 
 	return account, nil
