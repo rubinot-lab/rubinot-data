@@ -87,7 +87,7 @@ func parseWorldInfo(doc *goquery.Document) (domain.WorldInfo, bool, error) {
 		value := strings.TrimSpace(tds.Eq(1).Text())
 		switch strings.ToLower(label) {
 		case "status":
-			info.Status = value
+			info.Status = strings.ToLower(value)
 			found = true
 		case "players online":
 			info.PlayersOnline = parseInt(value)
