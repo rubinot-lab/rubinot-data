@@ -16,7 +16,7 @@ func FetchGuilds(ctx context.Context, baseURL, worldName string, worldID int, op
 	defer span.End()
 
 	started := time.Now()
-	sourceURL := fmt.Sprintf("%s/?subtopic=guilds&world=%d", strings.TrimRight(baseURL, "/"), worldID)
+	sourceURL := fmt.Sprintf("%s/?subtopic=guilds", strings.TrimRight(baseURL, "/"))
 	client := NewClient(opts)
 
 	span.SetAttributes(
@@ -26,7 +26,8 @@ func FetchGuilds(ctx context.Context, baseURL, worldName string, worldID int, op
 		attribute.String("rubinot.source_url", sourceURL),
 	)
 
-	htmlBody, err := client.Fetch(ctx, sourceURL)
+	fetchURL := buildFormSubmitDataURI(sourceURL, fmt.Sprintf("world=%d", worldID))
+	htmlBody, err := client.Fetch(ctx, fetchURL)
 	scrapeDuration.WithLabelValues("guilds").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("guilds", "error").Inc()
@@ -56,11 +57,11 @@ func parseGuildsHTML(worldName, htmlBody string) (domain.GuildsResult, error) {
 		Formation: []domain.GuildListEntry{},
 	}
 
-	if activeContainer := findContainerByHeaders(doc, []string{"active guilds"}); activeContainer != nil {
+	if activeContainer := findContainerByHeaders(doc, []string{"active guilds", "guilds ativas", "guilds activas"}); activeContainer != nil {
 		result.Active = parseGuildListTable(activeContainer)
 	}
 
-	if formationContainer := findContainerByHeaders(doc, []string{"guilds in formation", "in formation"}); formationContainer != nil {
+	if formationContainer := findContainerByHeaders(doc, []string{"guilds in formation", "in formation", "guilds em formação", "guilds em formacao", "em formação", "em formacao"}); formationContainer != nil {
 		result.Formation = parseGuildListTable(formationContainer)
 	}
 
@@ -70,6 +71,19 @@ func parseGuildsHTML(worldName, htmlBody string) (domain.GuildsResult, error) {
 	}
 
 	return result, nil
+}
+
+func buildFormSubmitDataURI(actionURL, formData string) string {
+	target := strings.Replace(actionURL, "://www.", "://", 1)
+	html := fmt.Sprintf(`<form method="post" action="%s">`, target)
+	for _, pair := range strings.Split(formData, "&") {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) == 2 {
+			html += fmt.Sprintf(`<input name="%s" value="%s">`, parts[0], parts[1])
+		}
+	}
+	html += `</form><script>document.forms[0].submit()</script>`
+	return "data:text/html," + html
 }
 
 func parseGuildListTable(container *goquery.Selection) []domain.GuildListEntry {
@@ -82,9 +96,21 @@ func parseGuildListTable(container *goquery.Selection) []domain.GuildListEntry {
 		}
 
 		nameCell := cells.Eq(1)
-		nameLink := nameCell.Find("a[href*='GuildName=']").First()
-		name := normalizeText(nameLink.Text())
+		name := normalizeText(nameCell.Find("b").First().Text())
 		if name == "" {
+			name = normalizeText(nameCell.Find("a").First().Text())
+		}
+		if name == "" {
+			return
+		}
+
+		if hiddenName, exists := row.Find("input[name='GuildName']").First().Attr("value"); exists && strings.TrimSpace(hiddenName) != "" {
+			name = strings.TrimSpace(hiddenName)
+		}
+
+		nameLower := strings.ToLower(name)
+		cell0Lower := strings.ToLower(normalizeText(cells.Eq(0).Text()))
+		if nameLower == "description" || nameLower == "name" || cell0Lower == "logo" {
 			return
 		}
 
@@ -92,8 +118,11 @@ func parseGuildListTable(container *goquery.Selection) []domain.GuildListEntry {
 		if logoURL, exists := cells.Eq(0).Find("img").First().Attr("src"); exists {
 			entry.LogoURL = strings.TrimSpace(logoURL)
 		}
-		if cells.Length() >= 3 {
-			entry.Description = normalizeText(cells.Eq(2).Text())
+
+		fullCellText := normalizeText(nameCell.Text())
+		description := strings.TrimSpace(strings.TrimPrefix(fullCellText, name))
+		if description != "" {
+			entry.Description = description
 		}
 
 		entries = append(entries, entry)

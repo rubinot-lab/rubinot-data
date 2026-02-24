@@ -46,16 +46,16 @@ func ParseNewsID(raw string) (int, error) {
 	return newsID, nil
 }
 
-func ParseAuctionID(raw string) (string, error) {
+func ParseAuctionID(raw string) (int, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
-		return "", NewError(ErrorAuctionIDInvalid, "auction id cannot be empty", nil)
+		return 0, NewError(ErrorAuctionIDInvalid, "auction id cannot be empty", nil)
 	}
 	id, err := strconv.Atoi(value)
 	if err != nil || id <= 0 {
-		return "", NewError(ErrorAuctionIDInvalid, fmt.Sprintf("auction id must be a positive integer: %s", value), err)
+		return 0, NewError(ErrorAuctionIDInvalid, fmt.Sprintf("auction id must be a positive integer: %s", value), err)
 	}
-	return value, nil
+	return id, nil
 }
 
 func ParseArchiveDays(raw string, fallback int) (int, error) {

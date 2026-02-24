@@ -32,7 +32,7 @@ func TestParseAuctionsListHTMLCurrentFixture(t *testing.T) {
 	}
 
 	first := result.Entries[0]
-	if first.AuctionID == "" || first.CharacterName == "" {
+	if first.AuctionID == 0 || first.CharacterName == "" {
 		t.Fatalf("expected first entry auction_id and character_name, got %+v", first)
 	}
 	if first.Level <= 0 || first.Vocation == "" || first.World == "" {
@@ -88,12 +88,12 @@ func TestParseAuctionsListHTMLEmptyFixtures(t *testing.T) {
 
 func TestParseAuctionDetailHTMLActiveFixture(t *testing.T) {
 	html := readFixture(t, "auctions", "detail_active.html")
-	detail, err := parseAuctionDetailHTML("164830", html)
+	detail, err := parseAuctionDetailHTML(164830, html, false)
 	if err != nil {
 		t.Fatalf("expected active detail fixture to parse, got error: %v", err)
 	}
-	if detail.AuctionID != "164830" {
-		t.Fatalf("expected auction_id=164830, got %q", detail.AuctionID)
+	if detail.AuctionID != 164830 {
+		t.Fatalf("expected auction_id=164830, got %d", detail.AuctionID)
 	}
 	if detail.CharacterName == "" || detail.Level <= 0 {
 		t.Fatalf("expected character_name and level in active detail, got %+v", detail)
@@ -114,7 +114,7 @@ func TestParseAuctionDetailHTMLActiveFixture(t *testing.T) {
 
 func TestParseAuctionDetailHTMLEndedFixture(t *testing.T) {
 	html := readFixture(t, "auctions", "detail_ended.html")
-	detail, err := parseAuctionDetailHTML("145062", html)
+	detail, err := parseAuctionDetailHTML(145062, html, true)
 	if err != nil {
 		t.Fatalf("expected ended detail fixture to parse, got error: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestParseAuctionDetailHTMLEndedFixture(t *testing.T) {
 
 func TestParseAuctionDetailHTMLNotFoundFixture(t *testing.T) {
 	html := readFixture(t, "auctions", "detail_not_found.html")
-	_, err := parseAuctionDetailHTML("999999999", html)
+	_, err := parseAuctionDetailHTML(999999999, html, false)
 	if err == nil {
 		t.Fatal("expected not-found error from detail_not_found fixture")
 	}
@@ -184,7 +184,7 @@ func TestFetchAuctionDetailFallbackToPastURL(t *testing.T) {
 	detail, sources, err := FetchAuctionDetail(
 		context.Background(),
 		"https://www.rubinot.com.br",
-		"145062",
+		145062,
 		FetchOptions{FlareSolverrURL: server.URL, MaxTimeoutMs: 120000},
 	)
 	if err != nil {

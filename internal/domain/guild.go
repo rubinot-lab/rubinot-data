@@ -13,7 +13,7 @@ type GuildMember struct {
 	Level    int    `json:"level,omitempty"`
 	Joined   string `json:"joined,omitempty"`
 	Status   string `json:"status,omitempty"`
-	IsOnline bool   `json:"is_online,omitempty"`
+	IsOnline bool   `json:"is_online"`
 }
 
 type GuildInvite struct {
@@ -28,9 +28,9 @@ type GuildResult struct {
 	Guildhall        *GuildHall    `json:"guildhall,omitempty"`
 	Active           bool          `json:"active"`
 	Founded          string        `json:"founded,omitempty"`
-	OpenApplications bool          `json:"open_applications,omitempty"`
+	OpenApplications bool          `json:"open_applications"`
 	Homepage         string        `json:"homepage,omitempty"`
-	InWar            bool          `json:"in_war,omitempty"`
+	InWar            bool          `json:"in_war"`
 	DisbandDate      string        `json:"disband_date,omitempty"`
 	DisbandCondition string        `json:"disband_condition,omitempty"`
 	PlayersOnline    int           `json:"players_online"`

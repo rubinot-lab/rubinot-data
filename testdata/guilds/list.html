@@ -1,30 +1,44 @@
-<!-- FIXTURE: synthetic, must be replaced with real capture -->
 <html>
   <body>
     <div class="TableContainer">
-      <div class="CaptionContainer"><div class="Text">Active Guilds</div></div>
+      <div class="CaptionContainer"><div class="Text">Active Guilds on Belaria</div></div>
       <table class="TableContent">
-        <tr class="LabelH"><td>Logo</td><td>Name</td><td>Description</td></tr>
+        <tr><td width="64"><b>Logo</b></td><td width="100%"><b>Description</b></td><td width="56"><b>&nbsp;</b></td></tr>
         <tr>
           <td><img src="https://example.com/logo1.gif" /></td>
-          <td><a href="?subtopic=guilds&page=view&GuildName=Old+Squad">Old Squad</a></td>
-          <td>Open PvP guild</td>
+          <td><b>Old Squad</b><br>Open PvP guild</td>
+          <td>
+            <form action="?subtopic=guilds&amp;page=view" method="post">
+              <input type="hidden" name="GuildName" value="Old Squad">
+              <input type="submit" value="View">
+            </form>
+          </td>
         </tr>
         <tr>
           <td><img src="https://example.com/logo2.gif" /></td>
-          <td><a href="?subtopic=guilds&page=view&GuildName=Panq+Alliance">Panq Alliance</a></td>
-          <td>Family guild</td>
+          <td><b>Panq Alliance</b><br>Family guild</td>
+          <td>
+            <form action="?subtopic=guilds&amp;page=view" method="post">
+              <input type="hidden" name="GuildName" value="Panq Alliance">
+              <input type="submit" value="View">
+            </form>
+          </td>
         </tr>
       </table>
     </div>
     <div class="TableContainer">
       <div class="CaptionContainer"><div class="Text">Guilds in Formation</div></div>
       <table class="TableContent">
-        <tr class="LabelH"><td>Logo</td><td>Name</td><td>Description</td></tr>
+        <tr><td width="64"><b>Logo</b></td><td width="100%"><b>Description</b></td><td width="56"><b>&nbsp;</b></td></tr>
         <tr>
           <td><img src="https://example.com/logo3.gif" /></td>
-          <td><a href="?subtopic=guilds&page=view&GuildName=New+Hope">New Hope</a></td>
-          <td>Recruiting new players</td>
+          <td><b>New Hope</b><br>Recruiting new players</td>
+          <td>
+            <form action="?subtopic=guilds&amp;page=view" method="post">
+              <input type="hidden" name="GuildName" value="New Hope">
+              <input type="submit" value="View">
+            </form>
+          </td>
         </tr>
       </table>
     </div>

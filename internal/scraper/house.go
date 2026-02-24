@@ -127,9 +127,17 @@ func parseHouseHTML(html string, houseID int, worldName, townName string) (domai
 	switch {
 	case strings.Contains(lowerText, "currently being auctioned"):
 		house.Status = "auctioned"
+		auctionEndRaw := findRegexString(houseAuctionEndPattern, normalizedText)
+		auctionEndDate := auctionEndRaw
+		if auctionEndRaw != "" {
+			cleaned := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(auctionEndRaw), "BRA"))
+			if parsed, err := parseRubinotDateTimeToUTC(cleaned); err == nil {
+				auctionEndDate = parsed
+			}
+		}
 		house.Auction = &domain.HouseAuction{
 			CurrentBid: findRegexInt(houseBidPattern, normalizedText),
-			EndDate:    findRegexString(houseAuctionEndPattern, normalizedText),
+			EndDate:    auctionEndDate,
 			NoBidYet:   strings.Contains(lowerText, "no bid has been submitted so far"),
 		}
 		if bidder := strings.TrimSpace(content.Find("a[href*='subtopic=characters']").First().Text()); bidder != "" {
@@ -143,7 +151,6 @@ func parseHouseHTML(html string, houseID int, worldName, townName string) (domai
 	case strings.Contains(lowerText, "move out on"):
 		house.Status = "moving"
 		house.Owner = extractHouseOwner(content, normalizedText)
-		house.Owner.MovingDate = findRegexString(houseMovingDatePattern, normalizedText)
 	case strings.Contains(lowerText, "has been rented by"):
 		house.Status = "rented"
 		house.Owner = extractHouseOwner(content, normalizedText)
@@ -156,13 +163,31 @@ func parseHouseHTML(html string, houseID int, worldName, townName string) (domai
 
 func extractHouseOwner(content *goquery.Selection, normalizedText string) *domain.HouseOwner {
 	owner := &domain.HouseOwner{
-		Name:      strings.TrimSpace(content.Find("a[href*='subtopic=characters']").First().Text()),
-		PaidUntil: findRegexString(housePaidUntilPattern, normalizedText),
-		Level:     findRegexInt(houseLevelPattern, normalizedText),
+		Name:  strings.TrimSpace(content.Find("a[href*='subtopic=characters']").First().Text()),
+		Level: findRegexInt(houseLevelPattern, normalizedText),
 	}
 	if owner.Name == "" {
 		return nil
 	}
+
+	if rawPaidUntil := findRegexString(housePaidUntilPattern, normalizedText); rawPaidUntil != "" {
+		cleaned := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rawPaidUntil), "BRA"))
+		if parsed, err := parseRubinotDateTimeToUTC(cleaned); err == nil {
+			owner.PaidUntil = parsed
+		} else {
+			owner.PaidUntil = rawPaidUntil
+		}
+	}
+
+	if rawMovingDate := findRegexString(houseMovingDatePattern, normalizedText); rawMovingDate != "" {
+		cleaned := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rawMovingDate), "BRA"))
+		if parsed, err := parseRubinotDateTimeToUTC(cleaned); err == nil {
+			owner.MovingDate = parsed
+		} else {
+			owner.MovingDate = rawMovingDate
+		}
+	}
+
 	owner.Vocation = findRegexString(houseVocationPattern, normalizedText)
 	if owner.Vocation != "" {
 		owner.Vocation = cases.Title(language.English).String(strings.ToLower(owner.Vocation))

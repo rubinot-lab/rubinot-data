@@ -1,7 +1,7 @@
 package domain
 
 type AuctionEntry struct {
-	AuctionID     string `json:"auction_id"`
+	AuctionID     int    `json:"auction_id"`
 	CharacterName string `json:"character_name"`
 	Level         int    `json:"level"`
 	Vocation      string `json:"vocation"`
@@ -22,7 +22,7 @@ type AuctionsResult struct {
 }
 
 type AuctionDetail struct {
-	AuctionID     string `json:"auction_id"`
+	AuctionID     int    `json:"auction_id"`
 	CharacterName string `json:"character_name"`
 	Level         int    `json:"level"`
 	Vocation      string `json:"vocation"`

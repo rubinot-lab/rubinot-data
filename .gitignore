@@ -4,3 +4,4 @@ server
 *.out
 .env
 .env.*
+.playwright-mcp/

@@ -107,14 +107,48 @@ func parseEventsHTML(htmlBody string) (domain.EventsResult, error) {
 		})
 	})
 
-	if len(allEventsSet) > 0 {
-		for eventName := range allEventsSet {
-			result.AllEvents = append(result.AllEvents, eventName)
+	result.Days = filterCurrentMonthDays(result.Days)
+
+	allEventsSet = make(map[string]struct{})
+	for _, day := range result.Days {
+		for _, name := range day.Events {
+			allEventsSet[name] = struct{}{}
 		}
-		sort.Strings(result.AllEvents)
 	}
+	result.AllEvents = make([]string, 0, len(allEventsSet))
+	for eventName := range allEventsSet {
+		result.AllEvents = append(result.AllEvents, eventName)
+	}
+	sort.Strings(result.AllEvents)
 
 	return result, nil
+}
+
+func filterCurrentMonthDays(days []domain.EventDay) []domain.EventDay {
+	if len(days) <= 1 {
+		return days
+	}
+
+	start := 0
+	end := len(days)
+
+	if days[0].Day > 15 {
+		for i := 1; i < len(days); i++ {
+			if days[i].Day < days[i-1].Day {
+				start = i
+				break
+			}
+		}
+	}
+
+	for i := start + 1; i < len(days); i++ {
+		if days[i].Day < days[i-1].Day {
+			end = i
+			break
+		}
+	}
+
+	return days[start:end]
 }
 
 func findEventsCalendarTable(doc *goquery.Document) *goquery.Selection {
