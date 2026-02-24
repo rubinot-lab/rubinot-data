@@ -41,14 +41,36 @@ func TestParseDeathsHTMLPvPFixture(t *testing.T) {
 		t.Fatal("expected non-empty pvp entries")
 	}
 
-	pvpCount := 0
 	for _, entry := range result.Entries {
-		if entry.IsPvP {
-			pvpCount++
+		if !entry.IsPvP {
+			t.Fatalf("expected all entries to be pvp when filter is set, got non-pvp: %+v", entry)
 		}
 	}
-	if pvpCount == 0 {
-		t.Fatal("expected at least one pvp death entry")
+}
+
+func TestParseDeathsHTMLMinLevelFilter(t *testing.T) {
+	html := readFixture(t, "deaths", "normal.html")
+
+	unfiltered, err := parseDeathsHTML("Belaria", DeathsFilters{}, html)
+	if err != nil {
+		t.Fatalf("unfiltered parse failed: %v", err)
+	}
+	if len(unfiltered.Entries) == 0 {
+		t.Fatal("expected non-empty unfiltered entries")
+	}
+
+	filtered, err := parseDeathsHTML("Belaria", DeathsFilters{MinLevel: 500}, html)
+	if err != nil {
+		t.Fatalf("filtered parse failed: %v", err)
+	}
+
+	if len(filtered.Entries) >= len(unfiltered.Entries) {
+		t.Fatalf("expected filtered entries (%d) to be fewer than unfiltered (%d)", len(filtered.Entries), len(unfiltered.Entries))
+	}
+	for _, entry := range filtered.Entries {
+		if entry.Victim.Level < 500 {
+			t.Fatalf("expected all victims to have level >= 500, got %d for %s", entry.Victim.Level, entry.Victim.Name)
+		}
 	}
 }
 

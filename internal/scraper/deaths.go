@@ -158,6 +158,14 @@ func parseDeathsHTML(worldName string, filters DeathsFilters, html string) (doma
 			Killers: killers,
 			IsPvP:   len(playerKillers) > 0,
 		}
+
+		if filters.MinLevel > 0 && entry.Victim.Level < filters.MinLevel {
+			continue
+		}
+		if filters.PvPOnly != nil && *filters.PvPOnly && !entry.IsPvP {
+			continue
+		}
+
 		result.Entries = append(result.Entries, entry)
 	}
 
