@@ -1,157 +1,109 @@
-# Bugs and Recommended Fixes
+# Bugs and Fixes Status
 
-## Critical
+**Updated:** 2026-02-24 (post-fix deployment, v1.3.1)
 
-### BUG-01: Guild members list includes table header as first member
+## Fixed Bugs
 
-**Endpoint:** `GET /v1/guild/:name`
-**Symptom:** First member entry is:
-```json
-{"name": "Name and Title", "rank": "Rank [ sort]", "vocation": "Vocation [ sort]", "level": null}
+### BUG-02: Guilds list returns empty arrays — FIXED
+**Fix:** Data URI form submission trick. FlareSolverr navigates to a `data:text/html` URI containing an auto-submitting HTML form that POSTs to the target. Uses `document.forms[0].submit()` and strips `www.` to avoid redirect dropping POST data.
+**Result:** 212 active guilds returned for Belaria.
+
+### BUG-03: Auction history status always "active" — FIXED
+**Result:** History entries now show `status: "ended"`, `bid_type: "winning"`.
+
+### BUG-05: House `paid_until` raw string — FIXED
+**Result:** `paid_until` now ISO 8601 (`"2026-02-27T13:32:13Z"`).
+
+### BUG-09: Events duplicate day numbers — FIXED
+**Result:** 16 unique day entries for February 2026, no duplicates observed.
+
+### BUG-10: `auction_id` is string type — FIXED
+**Result:** `auction_id` now integer in all auction endpoints.
+
+### BUG-14: Commit SHA always "unknown" — FIXED
+**Result:** `/versions` shows `"commit":"ebe7b00"`.
+
+### BUG-15: World status casing inconsistency — FIXED
+**Result:** Both worlds list and world detail now use lowercase `"online"`.
+
+---
+
+## Remaining / New Bugs
+
+### BUG-NEW-01: Deaths filters not applied (CRITICAL)
+
+**Endpoint:** `GET /v1/deaths/:world?pvp=1&level=500`
+**Symptom:** Response metadata shows `"filters": {"min_level": 500, "pvp_only": true}` but actual entries are unfiltered:
+- 238 out of 300 entries have `is_pvp: false`
+- 218 out of 300 entries have victim level below 500
+**Root Cause:** Filters are appended to the upstream URL as GET params (`&level=500&pvp=1`) but the upstream rubinot.com.br `latestdeaths` page ignores these params. No server-side filtering is applied after scraping.
+**Fix:** Apply filters in `parseDeathsHTML` after scraping:
+```go
+if filters.MinLevel > 0 && entry.Victim.Level < filters.MinLevel {
+    continue
+}
+if filters.PvPOnly != nil && *filters.PvPOnly && !entry.IsPvP {
+    continue
+}
 ```
-**Root Cause:** `guild.go` header-skip check looks at the wrong cell index. It checks if `cells.Eq(0)` equals "Rank", but the actual header row has "Name and Title" in that position.
-**Fix:** Update the header detection to check for multiple header patterns or skip the first `<tr>` in the members table unconditionally.
+Also filter by guild name if provided.
 
 ---
 
-### BUG-02: Guilds list returns empty arrays
-
-**Endpoint:** `GET /v1/guilds/:world`
-**Symptom:** `{"active": [], "formation": []}` for Belaria (which has guilds)
-**Root Cause:** `guilds.go` container-finding logic (`findContainerByHeaders`) fails to match the HTML section headers on the live site. The fallback parser also doesn't find guild links in the expected positions.
-**Fix:** Debug against the live HTML structure. Capture the actual HTML from `https://www.rubinot.com.br/?subtopic=guilds&world=15` and update the header text matching and table parsing selectors.
-
----
-
-### BUG-03: Auction history entries show status "active"
-
-**Endpoint:** `GET /v1/auctions/history/:page`, `GET /v1/auctions/:id`
-**Symptom:** Auctions that have clearly ended (from 2023, or in history list) still show `"status": "active"`.
-**Root Cause:** The status parser doesn't correctly determine ended/cancelled status from the HTML. It likely defaults to "active" when no explicit ended indicator is found.
-**Fix:** For history list entries, default status should be "ended". For detail view, parse the actual auction status text from the HTML (look for "finished", "cancelled", or bid outcome indicators).
-
----
-
-## High
-
-### BUG-04: Character missing most fields
+### BUG-04: Character `account_information` always empty (HIGH)
 
 **Endpoint:** `GET /v1/character/:name`
-**Symptom:** Missing: `former_names`, `title`, `unlocked_titles`, `traded`, `married_to`, `comment`, `is_banned`, `former_worlds`, `auction_url`, `deletion_date`. `account_information` is `{}`. `other_characters` entirely absent.
-**Root Cause:** The parsing logic exists in `character.go` but the HTML row label matching doesn't match the live site's actual labels (likely case sensitivity, extra whitespace, or structural differences). Combined with `omitempty` JSON tags, unmatched fields are silently omitted.
-**Fix:** Capture the live HTML for a character page and compare the row labels against the expected patterns in the parser. Update the label matchers to handle the actual format.
+**Symptom:** `"account_information": {}` for all characters tested.
+**Status:** Still present. Parser likely not matching the HTML labels for account creation date, loyalty title, etc.
 
 ---
 
-### BUG-05: House `paid_until` is raw localized string
-
-**Endpoint:** `GET /v1/house/:world/:id`
-**Symptom:** `"paid_until": "2 March 2026, 10:09:29 BRA"` instead of ISO 8601
-**Root Cause:** `house.go` captures the regex match but doesn't convert to UTC via `parseRubinotDateTimeToUTC()`.
-**Fix:** Parse the captured date string through the date conversion function, similar to how character death times are parsed. Handle the "BRA" timezone identifier.
-
----
-
-### BUG-06: House owner missing level, vocation, moving_date
-
-**Endpoint:** `GET /v1/house/:world/:id`
-**Symptom:** Owner object only has `name` and `paid_until`, missing `level`, `vocation`, `moving_date`.
-**Root Cause:** Regex patterns in `house.go` don't match the actual HTML text. The patterns look for specific text like "level (\d+)" but the live HTML format differs.
-**Fix:** Capture live HTML and update the regex patterns.
-
----
-
-### BUG-07: Guild `is_online` is null instead of false for offline members
-
-**Endpoint:** `GET /v1/guild/:name`
-**Symptom:** 533 members have `"is_online": null`, 0 have `"is_online": false`
-**Root Cause:** Go zero-value for `bool` is `false`, and the `omitempty` JSON tag treats `false` as empty, serializing it as `null` (pointer) or omitting it. The else branch doesn't explicitly set `IsOnline`.
-**Fix:** Either:
-- Change the domain field to `*bool` and explicitly set `IsOnline = &falseVal` in the else branch
-- Remove `omitempty` from the `is_online` JSON tag so `false` is always serialized
-- Preferred: remove `omitempty` since `is_online` should always be present
-
----
-
-### BUG-08: News `/latest` returns incomplete entries
+### BUG-08: News `/latest` missing `id` and `url` fields (HIGH)
 
 **Endpoint:** `GET /v1/news/latest`
-**Symptom:** Only 1 entry from 2024-07-01. Missing `id` and `url` fields compared to archive entries.
-**Root Cause:** The latest news page on the source site may only show a single article. The parser doesn't extract `id` or `url` for this mode.
-**Fix:** Ensure the parser extracts the news `id` from the article link and constructs the `url`. If the site genuinely only has 1 article, this may be correct data but the missing fields are still a bug.
+**Symptom:** Entry has `date`, `title`, `category`, `type` but no `id` or `url`. Archive entries have both. Newsticker has `id` but no `url`.
+**Status:** Still present. The latest endpoint parses the main news page which may not expose article IDs in the same way as the archive page.
 
 ---
 
-### BUG-09: Events schedule has duplicate day numbers
+### BUG-NEW-02: Guild members missing `rank` field (MEDIUM)
 
-**Endpoint:** `GET /v1/events/schedule`
-**Symptom:** Days 1, 2, 4, 8, 26 each appear twice in the array. Calendar shows days from adjacent months.
-**Root Cause:** The event calendar HTML includes "overflow" days from the previous/next month. The parser captures all days without filtering to the requested month.
-**Fix:** Either:
-- Filter out days that don't belong to the requested month
-- Add a `month` field to each day entry so consumers can distinguish
-- Add a `date` (full YYYY-MM-DD) field instead of just `day`
+**Endpoint:** `GET /v1/guild/:name`
+**Symptom:** Some members are missing the `rank` field entirely. Example: "Lady Of King" in guild Reapers has `name`, `vocation`, `level`, `joined`, `status`, `is_online` but no `rank`.
+**Root Cause:** Parser may not be extracting rank for all members, possibly due to HTML structure variations when member has no explicit rank or rank column is empty.
 
 ---
 
-### BUG-10: `auction_id` is string type everywhere
-
-**Endpoints:** All auction endpoints
-**Symptom:** `"auction_id": "164960"` (string) instead of `164960` (integer)
-**Root Cause:** Domain model defines `AuctionID` as `string` instead of `int`.
-**Fix:** Change to `int` in the domain model and parse as integer in the scraper. This is a breaking API change - consider versioning.
-
----
-
-## Medium
-
-### BUG-11: Highscores entries missing title, traded, auction_url
-
-**Endpoint:** `GET /v1/highscores/:world/:category/:vocation/:page`
-**Symptom:** Each entry only has `rank`, `name`, `vocation`, `world`, `level`, `value`. Missing `title`, `traded`, `auction_url`.
-**Root Cause:** These fields exist in the domain model with `omitempty` but the parser doesn't extract them from the HTML (the highscores table may not include this data on the source site).
-**Fix:** Verify if the source HTML contains this data. If not, remove from domain model/documentation. If yes, update parser.
-
----
-
-### BUG-12: Deaths entries missing `assists` and `reason` fields
-
-**Endpoint:** `GET /v1/deaths/:world`
-**Symptom:** Each death only has `date`, `victim`, `killers`, `is_pvp`. No `assists` or `reason` array.
-**Root Cause:** The source site may not provide assist/reason data in the deaths list, or the parser doesn't extract it.
-**Fix:** Verify source HTML. If data exists, update parser. If not, remove from documentation.
-
----
-
-### BUG-13: News newsticker entries missing `url` field
+### BUG-13: News newsticker missing `url` field (MEDIUM)
 
 **Endpoint:** `GET /v1/news/newsticker`
-**Symptom:** Entries have `id` but no `url`, unlike archive entries.
-**Root Cause:** Parser doesn't construct URL for ticker entries.
-**Fix:** Construct URL from id (e.g., `https://rubinot.com.br/?news/archive/{id}` or similar).
+**Symptom:** Entries have `id` but no `url`. Archive entries include `url`.
+**Fix:** Construct URL from id (e.g., `"https://rubinot.com.br/?news/archive/{id}"`).
 
 ---
 
-### BUG-14: Commit SHA always "unknown"
+### BUG-NEW-03: Guild list `logo_url` uses relative paths (LOW)
 
-**Endpoint:** `GET /versions`, all `information.api.commit` envelopes
-**Symptom:** `"commit": "unknown"`
-**Root Cause:** Build pipeline doesn't inject git SHA via `-ldflags`.
-**Fix:** Add `-ldflags "-X main.commit=$(git rev-parse --short HEAD)"` to the build step in CI/CD and Dockerfile.
+**Endpoint:** `GET /v1/guilds/:world`
+**Symptom:** `logo_url` is `"./images/guilds/default.gif?v=1745624827"` (relative to site root). API consumers can't use this directly.
+**Fix:** Prepend base URL: `"https://rubinot.com.br/images/guilds/..."`.
 
 ---
 
-## Low
+### BUG-NEW-04: House 404s take 30-40 seconds (LOW)
 
-### BUG-15: World status casing inconsistency
+**Endpoint:** `GET /v1/house/:world/:id` with invalid house ID
+**Symptom:** Invalid house IDs (1, 35001) return 404 after 30-43 seconds because FlareSolverr fully loads the page before the API can determine the house doesn't exist.
+**Fix:** Consider caching known house IDs from the houses list endpoint, or adding a faster validation step before hitting FlareSolverr.
 
-**Endpoint:** `GET /v1/worlds` vs `GET /v1/world/:name`
-**Symptom:** Worlds list uses lowercase `"online"`, world detail uses capitalized `"Online"`.
-**Fix:** Normalize to consistent casing (lowercase preferred).
+---
 
-### BUG-16: Newsticker `category` duplicates `title`
+## Issue Summary
 
-**Endpoint:** `GET /v1/news/newsticker`
-**Symptom:** `{"title": "Event Schedule", "category": "Event Schedule"}` - category mirrors title.
-**Root Cause:** Source site may not distinguish category from title for tickers.
-**Fix:** Set category to `"ticker"` or `"newsticker"` for consistency if the source doesn't provide a separate category.
+| Severity | Count | Bugs |
+|----------|-------|------|
+| Critical | 1 | Deaths filters not applied |
+| High | 2 | Character empty account_info, News latest missing id/url |
+| Medium | 2 | Guild members missing rank, Newsticker missing url |
+| Low | 2 | Guild logo_url relative, House 404 slow |
+| **Fixed** | **7** | Guilds empty, Auction status, House paid_until, Events dupes, Auction ID type, Commit SHA, World status casing |
