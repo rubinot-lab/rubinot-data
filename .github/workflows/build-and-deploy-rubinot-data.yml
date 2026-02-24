@@ -1,0 +1,124 @@
+name: Build, Push, and Deploy rubinot-data
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      IMAGE_REPO: ghcr.io/giovannirco/rubinot-data
+      IMAGE_NAME: ghcr.io/giovannirco/rubinot-data
+      GITOPS_REPO: cddlabs-casa/omni-cddlabs-casa
+      GITOPS_PATH: manifests/cddlabs/apps/rubinot/rubinot-data.yaml
+      GITOPS_BRANCH: master
+    steps:
+      - name: Checkout rubinot-data
+        uses: actions/checkout@v4
+
+      - name: Setup build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y buildah
+
+      - name: Login to GHCR
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | buildah login --username "${{ github.actor }}" --password-stdin ghcr.io
+
+      - name: Compute image tags
+        id: vars
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHORT_SHA="${GITHUB_SHA::7}"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            VERSION_TAG="${GITHUB_REF_NAME}"
+          else
+            VERSION_TAG="${SHORT_SHA}"
+          fi
+          echo "version_tag=${VERSION_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push images with buildah
+        run: |
+          set -euo pipefail
+          buildah bud --format docker -t "${IMAGE_REPO}:${{ steps.vars.outputs.short_sha }}" -t "${IMAGE_REPO}:latest" -t "${IMAGE_REPO}:${{ steps.vars.outputs.version_tag }}" .
+          buildah push --tls-verify=false "${IMAGE_REPO}:${{ steps.vars.outputs.short_sha }}"
+          buildah push --tls-verify=false "${IMAGE_REPO}:latest"
+          buildah push --tls-verify=false "${IMAGE_REPO}:${{ steps.vars.outputs.version_tag }}"
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.OMNI_GITOPS_TOKEN }}
+          path: gitops
+          ref: ${{ env.GITOPS_BRANCH }}
+
+      - name: Update GitOps deployment image and metadata
+        run: |
+          set -euo pipefail
+
+          GITOPS_FILE="gitops/${GITOPS_PATH}"
+          SHORT_SHA="${{ steps.vars.outputs.short_sha }}"
+          VERSION_TAG="${{ steps.vars.outputs.version_tag }}"
+
+          if [ ! -f "${GITOPS_FILE}" ]; then
+            echo "GitOps file not found: ${GITOPS_FILE}" >&2
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          path = pathlib.Path(os.environ['GITOPS_FILE'])
+          text = path.read_text()
+
+          short_sha = os.environ['SHORT_SHA']
+          version_tag = os.environ['VERSION_TAG']
+
+          # image tag
+          text = re.sub(r"ghcr\.io/giovannirco/rubinot-data:[^\s'\"]+",
+                        f"ghcr.io/giovannirco/rubinot-data:{short_sha}",
+                        text,
+                        count=1)
+
+          # runtime metadata in env vars
+          text = re.sub(r"- name: APP_VERSION\n\s*value: .*",
+                        f"- name: APP_VERSION\n              value: {version_tag}",
+                        text, count=1)
+          text = re.sub(r"- name: APP_COMMIT\n\s*value: .*",
+                        f"- name: APP_COMMIT\n              value: {short_sha}",
+                        text, count=1)
+
+          path.write_text(text)
+          PY
+
+      - name: Commit and push GitOps update
+        run: |
+          set -euo pipefail
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- ${GITOPS_PATH}; then
+            echo "No manifest changes; nothing to deploy."
+            exit 0
+          fi
+
+          git add "${GITOPS_PATH}"
+          git commit -m "chore(rubinot): deploy rubinot-data ${{ steps.vars.outputs.version_tag }} (${{ steps.vars.outputs.short_sha }})"
+          git push origin "${{ env.GITOPS_BRANCH }}"
