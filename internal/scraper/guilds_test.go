@@ -54,7 +54,7 @@ func TestFetchGuildsHappy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected FetchGuilds to succeed, got error: %v", err)
 	}
-	if sourceURL != "https://www.rubinot.com.br/?subtopic=guilds&world=15" {
+	if sourceURL != "https://www.rubinot.com.br/?subtopic=guilds" {
 		t.Fatalf("unexpected source URL: %s", sourceURL)
 	}
 	if len(result.Active) == 0 {

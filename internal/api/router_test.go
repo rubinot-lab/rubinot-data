@@ -305,7 +305,7 @@ func newHappyFlareSolverrResponder(t *testing.T) func(string) fakeFlareSolverrRe
 			return fakeFlareSolverrReply{HTML: fixtures["character"]}
 		case strings.Contains(targetURL, "subtopic=guilds&page=view"):
 			return fakeFlareSolverrReply{HTML: fixtures["guild"]}
-		case strings.Contains(targetURL, "subtopic=guilds&world="):
+		case strings.Contains(targetURL, "subtopic=guilds"):
 			return fakeFlareSolverrReply{HTML: fixtures["guilds"]}
 		case strings.Contains(targetURL, "subtopic=houses&page=view"):
 			if strings.Contains(targetURL, "houseid=50") {
