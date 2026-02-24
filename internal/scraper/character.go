@@ -153,7 +153,7 @@ func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, err
 		valueText := normalizeText(valueCell.Text())
 
 		switch strings.ToLower(label) {
-		case "name":
+		case "name", "nome":
 			name := strings.TrimSpace(valueCell.Find("b").First().Text())
 			if name == "" {
 				name = strings.TrimSpace(valueText)
@@ -166,43 +166,43 @@ func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, err
 				info.AuctionURL = strings.TrimSpace(auctionURL)
 			}
 
-		case "former names":
+		case "former names", "nomes anteriores":
 			info.FormerNames = splitCSV(valueText)
 
-		case "sex":
+		case "sex", "sexo":
 			info.Sex = valueText
 
-		case "title":
+		case "title", "titulo", "título":
 			info.Title, info.UnlockedTitles = parseCharacterTitle(valueText)
 
-		case "vocation":
+		case "vocation", "vocação", "vocacao":
 			info.Vocation = valueText
 
-		case "level":
+		case "level", "nível", "nivel":
 			info.Level = parseInt(valueText)
 
-		case "achievement points":
+		case "achievement points", "pontos de conquista":
 			info.AchievementPoints = parseInt(valueText)
 
-		case "world":
+		case "world", "mundo":
 			info.World = valueText
 
-		case "former worlds":
+		case "former worlds", "mundos anteriores":
 			info.FormerWorlds = splitCSV(valueText)
 
-		case "residence":
+		case "residence", "residência", "residencia":
 			info.Residence = valueText
 
-		case "married to":
+		case "married to", "casado com", "casada com":
 			info.MarriedTo = valueText
 
-		case "house":
+		case "house", "casa":
 			info.Houses = parseCharacterHouses(valueCell)
 
 		case "guild":
 			info.Guild = parseCharacterGuild(valueCell, valueText)
 
-		case "last login":
+		case "last login", "último login", "ultimo login":
 			lastLogin, dateErr := parseRubinotDateTimeToUTC(valueText)
 			if dateErr != nil {
 				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
@@ -210,10 +210,10 @@ func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, err
 			}
 			info.LastLogin = lastLogin
 
-		case "account status":
+		case "account status", "status da conta":
 			info.AccountStatus = valueText
 
-		case "deletion date":
+		case "deletion date", "data de exclusão", "data de exclusao":
 			deletionDate, dateErr := parseRubinotDateTimeToUTC(valueText)
 			if dateErr != nil {
 				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
@@ -221,7 +221,7 @@ func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, err
 			}
 			info.DeletionDate = deletionDate
 
-		case "comment":
+		case "comment", "comentário", "comentario":
 			info.Comment = valueText
 		}
 		return true
@@ -313,14 +313,14 @@ func parseAccountInformation(container *goquery.Selection) (domain.AccountInform
 		label := strings.ToLower(normalizeLabel(cells.Eq(0).Text()))
 		value := normalizeText(cells.Eq(1).Text())
 		switch label {
-		case "created":
+		case "created", "criada", "criado":
 			created, dateErr := parseRubinotDateTimeToUTC(value)
 			if dateErr != nil {
 				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
 				return false
 			}
 			account.Created = created
-		case "loyalty title":
+		case "loyalty title", "titulo de lealdade", "título de lealdade":
 			account.LoyaltyTitle = value
 		}
 		return true
