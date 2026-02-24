@@ -59,6 +59,8 @@ func NewRouter() (*gin.Engine, error) {
 			"commit":  getEnv("APP_COMMIT", defaultAPICommit),
 		})
 	})
+	router.GET("/openapi.json", docsSpec)
+	router.GET("/docs", docsPage)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	v1 := router.Group("/v1")
