@@ -220,8 +220,8 @@ func TestParseAuctionID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected auction id to parse successfully, got: %v", err)
 	}
-	if auctionID != "165320" {
-		t.Fatalf("expected auction id 165320, got %q", auctionID)
+	if auctionID != 165320 {
+		t.Fatalf("expected auction id 165320, got %d", auctionID)
 	}
 
 	_, err = ParseAuctionID("")

@@ -93,21 +93,22 @@ func fetchAuctionsList(
 func FetchAuctionDetail(
 	ctx context.Context,
 	baseURL string,
-	auctionID string,
+	auctionID int,
 	opts FetchOptions,
 ) (domain.AuctionDetail, []string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchAuctionDetail")
 	defer span.End()
 
+	idStr := fmt.Sprintf("%d", auctionID)
 	sourceURLs := []string{
-		fmt.Sprintf("%s/?currentcharactertrades/%s", strings.TrimRight(baseURL, "/"), auctionID),
-		fmt.Sprintf("%s/?pastcharactertrades/%s", strings.TrimRight(baseURL, "/"), auctionID),
+		fmt.Sprintf("%s/?currentcharactertrades/%s", strings.TrimRight(baseURL, "/"), idStr),
+		fmt.Sprintf("%s/?pastcharactertrades/%s", strings.TrimRight(baseURL, "/"), idStr),
 	}
 	client := NewClient(opts)
 
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "auction_detail"),
-		attribute.String("rubinot.auction_id", auctionID),
+		attribute.Int("rubinot.auction_id", auctionID),
 	)
 
 	for _, sourceURL := range sourceURLs {
@@ -124,8 +125,9 @@ func FetchAuctionDetail(
 			return domain.AuctionDetail{}, sourceURLs, err
 		}
 
+		isPastURL := strings.Contains(sourceURL, "pastcharactertrades")
 		parseStarted := time.Now()
-		detail, parseErr := parseAuctionDetailHTML(auctionID, htmlBody)
+		detail, parseErr := parseAuctionDetailHTML(auctionID, htmlBody, isPastURL)
 		parseDuration.WithLabelValues("auction_detail").Observe(time.Since(parseStarted).Seconds())
 		if parseErr != nil {
 			var validationErr validation.Error
@@ -186,7 +188,7 @@ func parseAuctionsListHTML(auctionType string, page int, htmlBody string) (domai
 	}
 
 	doc.Find("div.Auction").Each(func(_ int, auction *goquery.Selection) {
-		entry, ok := parseAuctionListEntry(auction)
+		entry, ok := parseAuctionListEntry(auction, auctionType)
 		if !ok {
 			return
 		}
@@ -212,7 +214,7 @@ func parseAuctionsListHTML(auctionType string, page int, htmlBody string) (domai
 	return result, nil
 }
 
-func parseAuctionListEntry(auction *goquery.Selection) (domain.AuctionEntry, bool) {
+func parseAuctionListEntry(auction *goquery.Selection, auctionType string) (domain.AuctionEntry, bool) {
 	header := auction.Find(".AuctionHeader").First()
 	if header.Length() == 0 {
 		return domain.AuctionEntry{}, false
@@ -247,8 +249,14 @@ func parseAuctionListEntry(auction *goquery.Selection) (domain.AuctionEntry, boo
 	auctionEnd := parseAuctionDateField(auctionBodyText, "End")
 
 	status := "active"
+	if auctionType == auctionTypeHistory {
+		status = "ended"
+	}
 	if strings.Contains(strings.ToLower(auction.Text()), "finished") || strings.EqualFold(bidType, "winning") {
 		status = "ended"
+	}
+	if strings.Contains(strings.ToLower(auction.Text()), "cancelled") || strings.Contains(strings.ToLower(auction.Text()), "canceled") {
+		status = "cancelled"
 	}
 
 	return domain.AuctionEntry{
@@ -265,7 +273,7 @@ func parseAuctionListEntry(auction *goquery.Selection) (domain.AuctionEntry, boo
 	}, true
 }
 
-func parseAuctionDetailHTML(auctionID string, htmlBody string) (domain.AuctionDetail, error) {
+func parseAuctionDetailHTML(auctionID int, htmlBody string, isPast bool) (domain.AuctionDetail, error) {
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
 	if err != nil {
 		return domain.AuctionDetail{}, err
@@ -287,6 +295,11 @@ func parseAuctionDetailHTML(auctionID string, htmlBody string) (domain.AuctionDe
 		return domain.AuctionDetail{}, validation.NewError(validation.ErrorEntityNotFound, "auction not found", nil)
 	}
 
+	defaultStatus := "active"
+	if isPast {
+		defaultStatus = "ended"
+	}
+
 	detail := domain.AuctionDetail{
 		AuctionID:     auctionID,
 		CharacterName: name,
@@ -294,7 +307,7 @@ func parseAuctionDetailHTML(auctionID string, htmlBody string) (domain.AuctionDe
 		Vocation:      normalizeText(summaryMatch[2]),
 		Sex:           normalizeText(summaryMatch[3]),
 		World:         normalizeText(summaryMatch[4]),
-		Status:        "active",
+		Status:        defaultStatus,
 	}
 
 	bodyText := normalizeText(auction.Find(".AuctionBody").Text())
@@ -303,8 +316,12 @@ func parseAuctionDetailHTML(auctionID string, htmlBody string) (domain.AuctionDe
 	detail.AuctionStart = parseAuctionDateField(bodyText, "Start")
 	detail.AuctionEnd = parseAuctionDateField(bodyText, "End")
 
-	if strings.Contains(strings.ToLower(auction.Text()), "finished") || detail.BidType == "winning" {
+	auctionText := strings.ToLower(auction.Text())
+	if strings.Contains(auctionText, "finished") || detail.BidType == "winning" {
 		detail.Status = "ended"
+	}
+	if strings.Contains(auctionText, "cancelled") || strings.Contains(auctionText, "canceled") {
+		detail.Status = "cancelled"
 	}
 
 	return detail, nil
@@ -370,19 +387,19 @@ func parseAuctionDateTimeToUTC(raw string) (string, error) {
 	return parsed.UTC().Format(time.RFC3339), nil
 }
 
-func extractAuctionID(link *goquery.Selection) string {
+func extractAuctionID(link *goquery.Selection) int {
 	if link == nil || link.Length() == 0 {
-		return ""
+		return 0
 	}
 	href, ok := link.Attr("href")
 	if !ok {
-		return ""
+		return 0
 	}
 	match := auctionIDPattern.FindStringSubmatch(href)
 	if len(match) != 2 {
-		return ""
+		return 0
 	}
-	return match[1]
+	return parseInt(match[1])
 }
 
 func isAuctionNotFoundPage(doc *goquery.Document) bool {
