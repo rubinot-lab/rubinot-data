@@ -35,6 +35,17 @@ func TestParseGuildHTMLActiveFixture(t *testing.T) {
 	if guild.MembersTotal != len(guild.Members) {
 		t.Fatalf("expected members_total=%d, got %d", len(guild.Members), guild.MembersTotal)
 	}
+
+	for _, member := range guild.Members {
+		if member.Rank == "" {
+			t.Fatalf("expected all members to have a rank, but %q has empty rank", member.Name)
+		}
+	}
+
+	first := guild.Members[0]
+	if first.Rank != "Leader" {
+		t.Fatalf("expected first member rank to be Leader, got %q", first.Rank)
+	}
 }
 
 func TestParseGuildHTMLDisbandedSynthetic(t *testing.T) {

@@ -167,6 +167,7 @@ func parseGuildInfo(infoText string, infoContainer *goquery.Selection, result *d
 
 func parseGuildMembers(container *goquery.Selection) ([]domain.GuildMember, error) {
 	members := make([]domain.GuildMember, 0)
+	currentRank := ""
 
 	container.Find(".TableContent tr").Each(func(_ int, row *goquery.Selection) {
 		cells := row.Find("td")
@@ -180,6 +181,11 @@ func parseGuildMembers(container *goquery.Selection) ([]domain.GuildMember, erro
 		}
 
 		rank := normalizeText(cells.Eq(0).Text())
+		if rank != "" {
+			currentRank = rank
+		} else {
+			rank = currentRank
+		}
 		nameCell := cells.Eq(1)
 		name := normalizeText(nameCell.Find("a").First().Text())
 		if name == "" {

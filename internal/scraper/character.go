@@ -105,7 +105,9 @@ func parseCharacterHTML(htmlBody string) (domain.CharacterResult, error) {
 		if parseErr != nil {
 			return domain.CharacterResult{}, parseErr
 		}
-		result.AccountInfo = accountInfo
+		if accountInfo.Created != "" || accountInfo.LoyaltyTitle != "" {
+			result.AccountInfo = &accountInfo
+		}
 	}
 
 	otherCharactersContainer := findContainerByHeaders(doc, []string{"characters", "personagens"})

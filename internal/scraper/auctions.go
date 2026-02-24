@@ -324,6 +324,12 @@ func parseAuctionDetailHTML(auctionID int, htmlBody string, isPast bool) (domain
 		detail.Status = "cancelled"
 	}
 
+	if detail.Status == "active" && detail.AuctionEnd != "" {
+		if endTime, err := time.Parse(time.RFC3339, detail.AuctionEnd); err == nil && time.Now().UTC().After(endTime) {
+			detail.Status = "ended"
+		}
+	}
+
 	return detail, nil
 }
 

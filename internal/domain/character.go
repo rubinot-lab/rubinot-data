@@ -61,6 +61,6 @@ type OtherCharacter struct {
 type CharacterResult struct {
 	CharacterInfo   CharacterInfo      `json:"character_info"`
 	Deaths          []CharacterDeath   `json:"deaths,omitempty"`
-	AccountInfo     AccountInformation `json:"account_information,omitempty"`
+	AccountInfo     *AccountInformation `json:"account_information,omitempty"`
 	OtherCharacters []OtherCharacter   `json:"other_characters,omitempty"`
 }
