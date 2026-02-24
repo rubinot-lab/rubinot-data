@@ -126,6 +126,17 @@ func TestParseAuctionDetailHTMLEndedFixture(t *testing.T) {
 	}
 }
 
+func TestParseAuctionDetailHTMLPastEndDateMarksEnded(t *testing.T) {
+	html := readFixture(t, "auctions", "detail_ended.html")
+	detail, err := parseAuctionDetailHTML(145062, html, false)
+	if err != nil {
+		t.Fatalf("expected ended fixture to parse with isPast=false, got error: %v", err)
+	}
+	if detail.Status != "ended" {
+		t.Fatalf("expected status ended when auction_end is in the past, got %q", detail.Status)
+	}
+}
+
 func TestParseAuctionDetailHTMLNotFoundFixture(t *testing.T) {
 	html := readFixture(t, "auctions", "detail_not_found.html")
 	_, err := parseAuctionDetailHTML(999999999, html, false)
