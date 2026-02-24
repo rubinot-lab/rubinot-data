@@ -337,12 +337,21 @@ func parseNewsLatestListHTML(htmlBody string) (domain.NewsListResult, error) {
 			category = "news"
 		}
 
-		result.Entries = append(result.Entries, domain.NewsListEntry{
+		entry := domain.NewsListEntry{
 			Date:     date,
 			Title:    title,
 			Category: category,
 			Type:     "article",
-		})
+		}
+
+		if link := headline.Find("a[href*='news/archive/']").First(); link.Length() > 0 {
+			if href, exists := link.Attr("href"); exists {
+				entry.URL = strings.TrimSpace(href)
+				entry.ID = parseNewsArchiveID(href)
+			}
+		}
+
+		result.Entries = append(result.Entries, entry)
 	})
 
 	return result, nil
