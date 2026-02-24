@@ -56,11 +56,11 @@ func parseGuildsHTML(worldName, htmlBody string) (domain.GuildsResult, error) {
 		Formation: []domain.GuildListEntry{},
 	}
 
-	if activeContainer := findContainerByHeaders(doc, []string{"active guilds"}); activeContainer != nil {
+	if activeContainer := findContainerByHeaders(doc, []string{"active guilds", "guilds ativas", "guilds activas"}); activeContainer != nil {
 		result.Active = parseGuildListTable(activeContainer)
 	}
 
-	if formationContainer := findContainerByHeaders(doc, []string{"guilds in formation", "in formation"}); formationContainer != nil {
+	if formationContainer := findContainerByHeaders(doc, []string{"guilds in formation", "in formation", "guilds em formação", "guilds em formacao", "em formação", "em formacao"}); formationContainer != nil {
 		result.Formation = parseGuildListTable(formationContainer)
 	}
 
@@ -82,8 +82,11 @@ func parseGuildListTable(container *goquery.Selection) []domain.GuildListEntry {
 		}
 
 		nameCell := cells.Eq(1)
-		nameLink := nameCell.Find("a[href*='GuildName=']").First()
+		nameLink := nameCell.Find("a[href*='GuildName='], a[href*='guildname='], a[href*='guilds']").First()
 		name := normalizeText(nameLink.Text())
+		if name == "" {
+			name = normalizeText(nameCell.Find("a").First().Text())
+		}
 		if name == "" {
 			return
 		}

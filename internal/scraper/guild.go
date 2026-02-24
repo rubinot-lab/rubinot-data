@@ -174,7 +174,8 @@ func parseGuildMembers(container *goquery.Selection) ([]domain.GuildMember, erro
 			return
 		}
 
-		if strings.EqualFold(normalizeText(cells.Eq(0).Text()), "Rank") {
+		firstCell := strings.ToLower(normalizeText(cells.Eq(0).Text()))
+		if strings.Contains(firstCell, "rank") || strings.Contains(firstCell, "sort") {
 			return
 		}
 
