@@ -2,112 +2,55 @@ package scraper
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"testing"
-
-	"github.com/giovannirco/rubinot-data/internal/validation"
 )
 
-func TestParseGuildHTMLActiveFixture(t *testing.T) {
-	html := readFixture(t, "guild", "active.html")
-	guild, err := parseGuildHTML("Old Squad", html)
+func TestFetchGuildFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/guilds/Panq Alliance")
+		writeJSON(w, map[string]any{
+			"guild": map[string]any{
+				"id":           7343,
+				"name":         "Panq Alliance",
+				"motd":         "",
+				"description":  "desc",
+				"homepage":     "",
+				"world_id":     15,
+				"logo_name":    "default.gif",
+				"balance":      "0",
+				"creationdata": int64(1748825316),
+				"owner":        map[string]any{"id": 699107, "name": "Luann", "level": 917, "vocation": 6},
+				"members": []map[string]any{{
+					"id":        699107,
+					"name":      "Luann",
+					"level":     917,
+					"vocation":  6,
+					"rank":      "Leader",
+					"rankLevel": 3,
+					"nick":      "",
+					"joinDate":  int64(1748825316),
+					"isOnline":  false,
+				}},
+				"ranks":     []map[string]any{{"id": 123, "name": "Leader", "level": 3}},
+				"residence": map[string]any{"id": 1, "name": "Thais", "town": "Thais"},
+			},
+		})
+	}))
+	defer api.Close()
+
+	fs := newFlareSolverrJSONServer(t, nil)
+	defer fs.Close()
+
+	result, _, err := FetchGuild(context.Background(), baseURLOf(api), "Panq Alliance", testFetchOptions(fs.URL))
 	if err != nil {
-		t.Fatalf("expected active guild fixture to parse, got error: %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
-
-	if guild.Name == "" || guild.World == "" {
-		t.Fatalf("expected guild name and world, got %+v", guild)
+	if result.Name != "Panq Alliance" {
+		t.Fatalf("unexpected guild name: %s", result.Name)
 	}
-	if !guild.Active {
-		t.Fatal("expected active guild to have active=true")
+	if result.World != "Belaria" || len(result.Members) != 1 {
+		t.Fatalf("unexpected guild payload: %+v", result)
 	}
-	if !guild.OpenApplications {
-		t.Fatal("expected active guild fixture to have open_applications=true")
-	}
-	if guild.Founded == "" {
-		t.Fatal("expected founded date to be parsed and normalized")
-	}
-	if len(guild.Members) == 0 {
-		t.Fatal("expected member rows to be parsed")
-	}
-	if len(guild.Invites) == 0 {
-		t.Fatal("expected invited character rows to be parsed")
-	}
-	if guild.MembersTotal != len(guild.Members) {
-		t.Fatalf("expected members_total=%d, got %d", len(guild.Members), guild.MembersTotal)
-	}
-
-	for _, member := range guild.Members {
-		if member.Rank == "" {
-			t.Fatalf("expected all members to have a rank, but %q has empty rank", member.Name)
-		}
-	}
-
-	first := guild.Members[0]
-	if first.Rank != "Leader" {
-		t.Fatalf("expected first member rank to be Leader, got %q", first.Rank)
-	}
-}
-
-func TestParseGuildHTMLDisbandedSynthetic(t *testing.T) {
-	// FIXTURE: synthetic, must be replaced with real capture
-	html := readFixture(t, "guild", "disbanded.html")
-	guild, err := parseGuildHTML("Test Guild", html)
-	if err != nil {
-		t.Fatalf("expected disbanded fixture to parse, got error: %v", err)
-	}
-	if guild.Active {
-		t.Fatal("expected disbanded fixture to set active=false")
-	}
-	if guild.DisbandCondition == "" {
-		t.Fatal("expected disband_condition to be parsed")
-	}
-}
-
-func TestParseGuildHTMLWithGuildhallSynthetic(t *testing.T) {
-	// FIXTURE: synthetic, must be replaced with real capture
-	html := readFixture(t, "guild", "with_guildhall.html")
-	guild, err := parseGuildHTML("Guild House Team", html)
-	if err != nil {
-		t.Fatalf("expected with_guildhall fixture to parse, got error: %v", err)
-	}
-	if guild.Guildhall == nil {
-		t.Fatal("expected guildhall to be parsed")
-	}
-	if guild.Guildhall.Name == "" || guild.Guildhall.HouseID <= 0 {
-		t.Fatalf("expected guildhall name and house_id, got %+v", guild.Guildhall)
-	}
-}
-
-func TestParseGuildHTMLInWarSynthetic(t *testing.T) {
-	// FIXTURE: synthetic, must be replaced with real capture
-	html := readFixture(t, "guild", "in_war.html")
-	guild, err := parseGuildHTML("War Guild", html)
-	if err != nil {
-		t.Fatalf("expected in_war fixture to parse, got error: %v", err)
-	}
-	if !guild.InWar {
-		t.Fatal("expected in_war fixture to set in_war=true")
-	}
-}
-
-func TestParseGuildHTMLNotFoundFixture(t *testing.T) {
-	html := readFixture(t, "guild", "not_found.html")
-	_, err := parseGuildHTML("DefinitelyNotARealGuildXYZ", html)
-	assertValidationCode(t, err, validation.ErrorEntityNotFound)
-}
-
-func TestFetchGuildNotFound(t *testing.T) {
-	notFoundFixture := readFixture(t, "guild", "not_found.html")
-	server := newFakeFlareSolverrServer(t, func(_ string) string {
-		return notFoundFixture
-	})
-	defer server.Close()
-
-	_, _, err := FetchGuild(
-		context.Background(),
-		"https://www.rubinot.com.br",
-		"DefinitelyNotARealGuildXYZ",
-		FetchOptions{FlareSolverrURL: server.URL, MaxTimeoutMs: 120000},
-	)
-	assertValidationCode(t, err, validation.ErrorEntityNotFound)
 }

@@ -2,36 +2,132 @@ package scraper
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"regexp"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
-	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-const (
-	auctionTypeCurrent = "current"
-	auctionTypeHistory = "history"
-)
+const auctionListLimit = 25
 
-var (
-	auctionIDPattern            = regexp.MustCompile(`(?:currentcharactertrades|pastcharactertrades)/(\d+)`)
-	auctionSummaryLinePattern   = regexp.MustCompile(`(?i)Level:\s*(\d+)\s*\|\s*Vocation:\s*([^|]+)\|\s*(Male|Female)\s*\|\s*World:\s*([^\n<]+)`)
-	auctionResultsPattern       = regexp.MustCompile(`(?i)results:\s*([\d.,]+)`)
-	auctionPagePattern          = regexp.MustCompile(`(?i)currentpage=(\d+)`)
-	auctionDatePattern          = regexp.MustCompile(`(?i)Auction (Start|End):\s*([A-Za-z]{3}\s+\d{1,2}\s+\d{4},\s+\d{2}:\d{2}\s+BRA)`)
-	auctionBidTypeValuePattern  = regexp.MustCompile(`(?i)(Current|Winning|Minimum)\s+Bid:\s*([\d.,]+)`)
-	auctionNotFoundTextPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`(?i)an internal error has occurred`),
-		regexp.MustCompile(`(?i)requested url .+ was not found on this server`),
-		regexp.MustCompile(`(?i)no character auctions found`),
-	}
-)
+type auctionListAPIResponse struct {
+	Auctions []struct {
+		ID                int    `json:"id"`
+		State             int    `json:"state"`
+		StateName         string `json:"stateName"`
+		PlayerID          int    `json:"playerId"`
+		Owner             int    `json:"owner"`
+		StartingValue     int    `json:"startingValue"`
+		CurrentValue      int    `json:"currentValue"`
+		AuctionStart      int64  `json:"auctionStart"`
+		AuctionEnd        int64  `json:"auctionEnd"`
+		Name              string `json:"name"`
+		Level             int    `json:"level"`
+		Vocation          int    `json:"vocation"`
+		VocationName      string `json:"vocationName"`
+		Sex               int    `json:"sex"`
+		WorldID           int    `json:"worldId"`
+		WorldName         string `json:"worldName"`
+		LookType          int    `json:"lookType"`
+		LookHead          int    `json:"lookHead"`
+		LookBody          int    `json:"lookBody"`
+		LookLegs          int    `json:"lookLegs"`
+		LookFeet          int    `json:"lookFeet"`
+		LookAddons        int    `json:"lookAddons"`
+		CharmPoints       int    `json:"charmPoints"`
+		AchievementPoints int    `json:"achievementPoints"`
+		MagLevel          int    `json:"magLevel"`
+		Skills            struct {
+			Axe       int `json:"axe"`
+			Club      int `json:"club"`
+			Sword     int `json:"sword"`
+			Distance  int `json:"distance"`
+			Dist      int `json:"dist"`
+			Shielding int `json:"shielding"`
+			Fishing   int `json:"fishing"`
+			Fist      int `json:"fist"`
+			Magic     int `json:"magic"`
+		} `json:"skills"`
+		HighlightItems []struct {
+			ItemID int    `json:"itemId"`
+			ID     int    `json:"id"`
+			Name   string `json:"name"`
+		} `json:"highlightItems"`
+		HighlightAugments []struct {
+			ArgType int    `json:"argType"`
+			Text    string `json:"text"`
+			Name    string `json:"name"`
+		} `json:"highlightAugments"`
+	} `json:"auctions"`
+	Pagination struct {
+		Page       int `json:"page"`
+		Limit      int `json:"limit"`
+		Total      int `json:"total"`
+		TotalPages int `json:"totalPages"`
+	} `json:"pagination"`
+}
+
+type auctionDetailAPIResponse struct {
+	Auction struct {
+		ID              int    `json:"id"`
+		State           int    `json:"state"`
+		StateName       string `json:"stateName"`
+		PlayerID        int    `json:"playerId"`
+		Owner           int    `json:"owner"`
+		StartingValue   int    `json:"startingValue"`
+		CurrentValue    int    `json:"currentValue"`
+		WinningBid      int    `json:"winningBid"`
+		HighestBidderID int    `json:"highestBidderId"`
+		AuctionStart    int64  `json:"auctionStart"`
+		AuctionEnd      int64  `json:"auctionEnd"`
+	} `json:"auction"`
+	Player struct {
+		Name         string `json:"name"`
+		Level        int    `json:"level"`
+		Vocation     int    `json:"vocation"`
+		VocationName string `json:"vocationName"`
+		Sex          int    `json:"sex"`
+		WorldID      int    `json:"worldId"`
+		WorldName    string `json:"worldName"`
+		LookType     int    `json:"lookType"`
+		LookHead     int    `json:"lookHead"`
+		LookBody     int    `json:"lookBody"`
+		LookLegs     int    `json:"lookLegs"`
+		LookFeet     int    `json:"lookFeet"`
+		LookAddons   int    `json:"lookAddons"`
+		LookMount    int    `json:"lookMount"`
+	} `json:"player"`
+	General struct {
+		AchievementPoints int `json:"achievementPoints"`
+		CharmPoints       int `json:"charmPoints"`
+		MagLevel          int `json:"magLevel"`
+		Skills            struct {
+			Axe       int `json:"axe"`
+			Club      int `json:"club"`
+			Sword     int `json:"sword"`
+			Distance  int `json:"distance"`
+			Dist      int `json:"dist"`
+			Shielding int `json:"shielding"`
+			Fishing   int `json:"fishing"`
+			Fist      int `json:"fist"`
+			Magic     int `json:"magic"`
+		} `json:"skills"`
+	} `json:"general"`
+	HighlightItems []struct {
+		ItemID int    `json:"itemId"`
+		ID     int    `json:"id"`
+		Name   string `json:"name"`
+	} `json:"highlightItems"`
+	HighlightAugments []struct {
+		ArgType int    `json:"argType"`
+		Text    string `json:"text"`
+		Name    string `json:"name"`
+	} `json:"highlightAugments"`
+}
 
 func FetchCurrentAuctions(
 	ctx context.Context,
@@ -39,7 +135,7 @@ func FetchCurrentAuctions(
 	page int,
 	opts FetchOptions,
 ) (domain.AuctionsResult, string, error) {
-	return fetchAuctionsList(ctx, baseURL, auctionTypeCurrent, page, opts)
+	return fetchAuctionsList(ctx, baseURL, "current", page, opts)
 }
 
 func FetchAuctionHistory(
@@ -48,7 +144,7 @@ func FetchAuctionHistory(
 	page int,
 	opts FetchOptions,
 ) (domain.AuctionsResult, string, error) {
-	return fetchAuctionsList(ctx, baseURL, auctionTypeHistory, page, opts)
+	return fetchAuctionsList(ctx, baseURL, "history", page, opts)
 }
 
 func fetchAuctionsList(
@@ -61,32 +157,63 @@ func fetchAuctionsList(
 	ctx, span := tracer.Start(ctx, "scraper.fetchAuctionsList")
 	defer span.End()
 
-	sourceURL := buildAuctionsListURL(baseURL, auctionType, page)
+	if page <= 0 {
+		page = 1
+	}
+
+	path := "/api/bazaar"
+	if auctionType == "history" {
+		path = "/api/bazaar/history"
+	}
+
+	query := url.Values{}
+	query.Set("page", strconv.Itoa(page))
+	query.Set("limit", strconv.Itoa(auctionListLimit))
+	sourceURL := fmt.Sprintf("%s%s?%s", strings.TrimRight(baseURL, "/"), path, query.Encode())
 	client := NewClient(opts)
 
-	endpointMetric := "auctions_" + auctionType
 	span.SetAttributes(
-		attribute.String("rubinot.endpoint", endpointMetric),
+		attribute.String("rubinot.endpoint", "auctions"),
 		attribute.String("rubinot.source_url", sourceURL),
-		attribute.String("rubinot.auction_type", auctionType),
+		attribute.String("rubinot.type", auctionType),
 		attribute.Int("rubinot.page", page),
 	)
 
 	started := time.Now()
-	htmlBody, err := client.Fetch(ctx, sourceURL)
-	scrapeDuration.WithLabelValues(endpointMetric).Observe(time.Since(started).Seconds())
+	var payload auctionListAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
+	scrapeDuration.WithLabelValues("auctions").Observe(time.Since(started).Seconds())
 	if err != nil {
-		scrapeRequests.WithLabelValues(endpointMetric, "error").Inc()
+		scrapeRequests.WithLabelValues("auctions", "error").Inc()
 		return domain.AuctionsResult{}, sourceURL, err
 	}
-	scrapeRequests.WithLabelValues(endpointMetric, "ok").Inc()
+	scrapeRequests.WithLabelValues("auctions", "ok").Inc()
 
 	parseStarted := time.Now()
-	result, parseErr := parseAuctionsListHTML(auctionType, page, htmlBody)
-	parseDuration.WithLabelValues(endpointMetric).Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.AuctionsResult{}, sourceURL, parseErr
+	entries := make([]domain.AuctionEntry, 0, len(payload.Auctions))
+	for _, row := range payload.Auctions {
+		entries = append(entries, mapAuctionListEntry(row))
 	}
+
+	result := domain.AuctionsResult{
+		Type:         auctionType,
+		Page:         payload.Pagination.Page,
+		TotalResults: payload.Pagination.Total,
+		TotalPages:   payload.Pagination.TotalPages,
+		Entries:      entries,
+		Pagination: &domain.AuctionsPagination{
+			Page:       payload.Pagination.Page,
+			Limit:      payload.Pagination.Limit,
+			Total:      payload.Pagination.Total,
+			TotalPages: payload.Pagination.TotalPages,
+		},
+	}
+	if result.Page == 0 {
+		result.Page = page
+	}
+
+	parseDuration.WithLabelValues("auctions").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("auctions").Set(float64(len(result.Entries)))
 	return result, sourceURL, nil
 }
 
@@ -99,343 +226,219 @@ func FetchAuctionDetail(
 	ctx, span := tracer.Start(ctx, "scraper.FetchAuctionDetail")
 	defer span.End()
 
-	idStr := fmt.Sprintf("%d", auctionID)
-	sourceURLs := []string{
-		fmt.Sprintf("%s/?currentcharactertrades/%s", strings.TrimRight(baseURL, "/"), idStr),
-		fmt.Sprintf("%s/?pastcharactertrades/%s", strings.TrimRight(baseURL, "/"), idStr),
-	}
+	sourceURL := fmt.Sprintf("%s/api/bazaar/%d", strings.TrimRight(baseURL, "/"), auctionID)
 	client := NewClient(opts)
 
 	span.SetAttributes(
-		attribute.String("rubinot.endpoint", "auction_detail"),
+		attribute.String("rubinot.endpoint", "auction"),
+		attribute.String("rubinot.source_url", sourceURL),
 		attribute.Int("rubinot.auction_id", auctionID),
 	)
 
-	for _, sourceURL := range sourceURLs {
-		span.SetAttributes(attribute.String("rubinot.source_url", sourceURL))
-
-		started := time.Now()
-		htmlBody, err := client.Fetch(ctx, sourceURL)
-		scrapeDuration.WithLabelValues("auction_detail").Observe(time.Since(started).Seconds())
-		if err != nil {
-			if shouldIgnoreAuctionSourceError(err) {
-				continue
-			}
-			scrapeRequests.WithLabelValues("auction_detail", "error").Inc()
-			return domain.AuctionDetail{}, sourceURLs, err
-		}
-
-		isPastURL := strings.Contains(sourceURL, "pastcharactertrades")
-		parseStarted := time.Now()
-		detail, parseErr := parseAuctionDetailHTML(auctionID, htmlBody, isPastURL)
-		parseDuration.WithLabelValues("auction_detail").Observe(time.Since(parseStarted).Seconds())
-		if parseErr != nil {
-			var validationErr validation.Error
-			if errors.As(parseErr, &validationErr) && validationErr.Code() == validation.ErrorEntityNotFound {
-				continue
-			}
-			scrapeRequests.WithLabelValues("auction_detail", "error").Inc()
-			return domain.AuctionDetail{}, sourceURLs, parseErr
-		}
-
-		scrapeRequests.WithLabelValues("auction_detail", "ok").Inc()
-		return detail, []string{sourceURL}, nil
-	}
-
-	scrapeRequests.WithLabelValues("auction_detail", "error").Inc()
-	return domain.AuctionDetail{}, sourceURLs, validation.NewError(validation.ErrorEntityNotFound, "auction not found", nil)
-}
-
-func buildAuctionsListURL(baseURL string, auctionType string, page int) string {
-	trimmedBase := strings.TrimRight(baseURL, "/")
-	if page < 1 {
-		page = 1
-	}
-
-	// TODO: AMBIGUOUS — contract says /currentcharactertrades?currentpage=N, but upstream currently requires ?subtopic=currentcharactertrades&currentpage=N.
-	switch auctionType {
-	case auctionTypeHistory:
-		if page == 1 {
-			return fmt.Sprintf("%s/pastcharactertrades", trimmedBase)
-		}
-		return fmt.Sprintf("%s/?subtopic=pastcharactertrades&currentpage=%d", trimmedBase, page)
-	default:
-		if page == 1 {
-			return fmt.Sprintf("%s/currentcharactertrades", trimmedBase)
-		}
-		return fmt.Sprintf("%s/?subtopic=currentcharactertrades&currentpage=%d", trimmedBase, page)
-	}
-}
-
-func parseAuctionsListHTML(auctionType string, page int, htmlBody string) (domain.AuctionsResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
+	started := time.Now()
+	var payload auctionDetailAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
+	scrapeDuration.WithLabelValues("auctions").Observe(time.Since(started).Seconds())
 	if err != nil {
-		return domain.AuctionsResult{}, err
+		scrapeRequests.WithLabelValues("auctions", "error").Inc()
+		return domain.AuctionDetail{}, []string{sourceURL}, err
 	}
+	scrapeRequests.WithLabelValues("auctions", "ok").Inc()
 
-	if page < 1 {
-		page = 1
+	parseStarted := time.Now()
+	result := domain.AuctionDetail{
+		AuctionID:         payload.Auction.ID,
+		State:             payload.Auction.State,
+		StateName:         strings.TrimSpace(payload.Auction.StateName),
+		PlayerID:          payload.Auction.PlayerID,
+		OwnerAccountID:    payload.Auction.Owner,
+		CharacterName:     strings.TrimSpace(payload.Player.Name),
+		Level:             payload.Player.Level,
+		Vocation:          strings.TrimSpace(payload.Player.VocationName),
+		VocationID:        payload.Player.Vocation,
+		Sex:               sexName(payload.Player.Sex),
+		World:             fallbackString(strings.TrimSpace(payload.Player.WorldName), worldNameByID(payload.Player.WorldID)),
+		WorldID:           payload.Player.WorldID,
+		BidType:           "bid",
+		BidValue:          payload.Auction.CurrentValue,
+		StartingValue:     payload.Auction.StartingValue,
+		CurrentValue:      payload.Auction.CurrentValue,
+		WinningBid:        payload.Auction.WinningBid,
+		HighestBidderID:   payload.Auction.HighestBidderID,
+		AuctionStart:      unixSecondsToRFC3339(payload.Auction.AuctionStart),
+		AuctionEnd:        unixSecondsToRFC3339(payload.Auction.AuctionEnd),
+		Status:            strings.TrimSpace(payload.Auction.StateName),
+		CharmPoints:       payload.General.CharmPoints,
+		AchievementPoints: payload.General.AchievementPoints,
+		MagLevel:          payload.General.MagLevel,
+		Skills:            toAuctionSkills(payload.General.Skills),
+		Outfit: domain.AuctionOutfit{
+			LookType:   payload.Player.LookType,
+			LookHead:   payload.Player.LookHead,
+			LookBody:   payload.Player.LookBody,
+			LookLegs:   payload.Player.LookLegs,
+			LookFeet:   payload.Player.LookFeet,
+			LookAddons: payload.Player.LookAddons,
+			LookMount:  payload.Player.LookMount,
+		},
+		HighlightItems:    toAuctionItems(payload.HighlightItems),
+		HighlightAugments: toAuctionAugments(payload.HighlightAugments),
 	}
-	result := domain.AuctionsResult{
-		Type:    auctionType,
-		Page:    page,
-		Entries: make([]domain.AuctionEntry, 0),
-	}
+	parseDuration.WithLabelValues("auctions").Observe(time.Since(parseStarted).Seconds())
 
-	if strings.Contains(strings.ToLower(doc.Text()), "no character auctions found") {
-		result.TotalPages = maxInt(parseAuctionsTotalPages(doc), 1)
-		return result, nil
-	}
-
-	doc.Find("div.Auction").Each(func(_ int, auction *goquery.Selection) {
-		entry, ok := parseAuctionListEntry(auction, auctionType)
-		if !ok {
-			return
-		}
-		result.Entries = append(result.Entries, entry)
-	})
-
-	totalResults := parseAuctionsTotalResults(doc)
-	if totalResults == 0 {
-		totalResults = len(result.Entries)
-	}
-	result.TotalResults = totalResults
-
-	totalPages := parseAuctionsTotalPages(doc)
-	if totalPages == 0 {
-		if page > 1 {
-			totalPages = page
-		} else {
-			totalPages = 1
-		}
-	}
-	result.TotalPages = totalPages
-
-	return result, nil
+	return result, []string{sourceURL}, nil
 }
 
-func parseAuctionListEntry(auction *goquery.Selection, auctionType string) (domain.AuctionEntry, bool) {
-	header := auction.Find(".AuctionHeader").First()
-	if header.Length() == 0 {
-		return domain.AuctionEntry{}, false
-	}
-
-	name := normalizeText(header.Find(".AuctionCharacterName a").First().Text())
-	if name == "" {
-		name = normalizeText(header.Find(".AuctionCharacterName").First().Text())
-	}
-	if name == "" {
-		return domain.AuctionEntry{}, false
-	}
-
-	summaryLine := normalizeText(header.Text())
-	summaryMatch := auctionSummaryLinePattern.FindStringSubmatch(summaryLine)
-	if len(summaryMatch) != 5 {
-		return domain.AuctionEntry{}, false
-	}
-
-	level := parseInt(summaryMatch[1])
-	vocation := normalizeText(summaryMatch[2])
-	sex := normalizeText(summaryMatch[3])
-	world := normalizeText(summaryMatch[4])
-	if level <= 0 || vocation == "" || sex == "" || world == "" {
-		return domain.AuctionEntry{}, false
-	}
-
-	auctionID := extractAuctionID(header.Find("a[href*='charactertrades/']").First())
-
-	auctionBodyText := normalizeText(auction.Find(".ShortAuctionData").Text())
-	bidType, bidValue := parseAuctionBidTypeAndValue(auctionBodyText)
-	auctionEnd := parseAuctionDateField(auctionBodyText, "End")
-
-	status := "active"
-	if auctionType == auctionTypeHistory {
-		status = "ended"
-	}
-	if strings.Contains(strings.ToLower(auction.Text()), "finished") || strings.EqualFold(bidType, "winning") {
-		status = "ended"
-	}
-	if strings.Contains(strings.ToLower(auction.Text()), "cancelled") || strings.Contains(strings.ToLower(auction.Text()), "canceled") {
-		status = "cancelled"
-	}
-
+func mapAuctionListEntry(row struct {
+	ID                int    `json:"id"`
+	State             int    `json:"state"`
+	StateName         string `json:"stateName"`
+	PlayerID          int    `json:"playerId"`
+	Owner             int    `json:"owner"`
+	StartingValue     int    `json:"startingValue"`
+	CurrentValue      int    `json:"currentValue"`
+	AuctionStart      int64  `json:"auctionStart"`
+	AuctionEnd        int64  `json:"auctionEnd"`
+	Name              string `json:"name"`
+	Level             int    `json:"level"`
+	Vocation          int    `json:"vocation"`
+	VocationName      string `json:"vocationName"`
+	Sex               int    `json:"sex"`
+	WorldID           int    `json:"worldId"`
+	WorldName         string `json:"worldName"`
+	LookType          int    `json:"lookType"`
+	LookHead          int    `json:"lookHead"`
+	LookBody          int    `json:"lookBody"`
+	LookLegs          int    `json:"lookLegs"`
+	LookFeet          int    `json:"lookFeet"`
+	LookAddons        int    `json:"lookAddons"`
+	CharmPoints       int    `json:"charmPoints"`
+	AchievementPoints int    `json:"achievementPoints"`
+	MagLevel          int    `json:"magLevel"`
+	Skills            struct {
+		Axe       int `json:"axe"`
+		Club      int `json:"club"`
+		Sword     int `json:"sword"`
+		Distance  int `json:"distance"`
+		Dist      int `json:"dist"`
+		Shielding int `json:"shielding"`
+		Fishing   int `json:"fishing"`
+		Fist      int `json:"fist"`
+		Magic     int `json:"magic"`
+	} `json:"skills"`
+	HighlightItems []struct {
+		ItemID int    `json:"itemId"`
+		ID     int    `json:"id"`
+		Name   string `json:"name"`
+	} `json:"highlightItems"`
+	HighlightAugments []struct {
+		ArgType int    `json:"argType"`
+		Text    string `json:"text"`
+		Name    string `json:"name"`
+	} `json:"highlightAugments"`
+}) domain.AuctionEntry {
 	return domain.AuctionEntry{
-		AuctionID:     auctionID,
-		CharacterName: name,
-		Level:         level,
-		Vocation:      vocation,
-		Sex:           sex,
-		World:         world,
-		BidType:       strings.ToLower(bidType),
-		BidValue:      bidValue,
-		AuctionEnd:    auctionEnd,
-		Status:        status,
-	}, true
+		AuctionID:         row.ID,
+		State:             row.State,
+		StateName:         strings.TrimSpace(row.StateName),
+		PlayerID:          row.PlayerID,
+		OwnerAccountID:    row.Owner,
+		CharacterName:     strings.TrimSpace(row.Name),
+		Level:             row.Level,
+		Vocation:          strings.TrimSpace(row.VocationName),
+		VocationID:        row.Vocation,
+		Sex:               sexName(row.Sex),
+		World:             fallbackString(strings.TrimSpace(row.WorldName), worldNameByID(row.WorldID)),
+		WorldID:           row.WorldID,
+		BidType:           "bid",
+		BidValue:          row.CurrentValue,
+		StartingValue:     row.StartingValue,
+		CurrentValue:      row.CurrentValue,
+		AuctionStart:      unixSecondsToRFC3339(row.AuctionStart),
+		AuctionEnd:        unixSecondsToRFC3339(row.AuctionEnd),
+		Status:            strings.TrimSpace(row.StateName),
+		CharmPoints:       row.CharmPoints,
+		AchievementPoints: row.AchievementPoints,
+		MagLevel:          row.MagLevel,
+		Skills:            toAuctionSkills(row.Skills),
+		Outfit: domain.AuctionOutfit{
+			LookType:   row.LookType,
+			LookHead:   row.LookHead,
+			LookBody:   row.LookBody,
+			LookLegs:   row.LookLegs,
+			LookFeet:   row.LookFeet,
+			LookAddons: row.LookAddons,
+		},
+		HighlightItems:    toAuctionItems(row.HighlightItems),
+		HighlightAugments: toAuctionAugments(row.HighlightAugments),
+	}
 }
 
-func parseAuctionDetailHTML(auctionID int, htmlBody string, isPast bool) (domain.AuctionDetail, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.AuctionDetail{}, err
+func toAuctionSkills(skills struct {
+	Axe       int `json:"axe"`
+	Club      int `json:"club"`
+	Sword     int `json:"sword"`
+	Distance  int `json:"distance"`
+	Dist      int `json:"dist"`
+	Shielding int `json:"shielding"`
+	Fishing   int `json:"fishing"`
+	Fist      int `json:"fist"`
+	Magic     int `json:"magic"`
+}) domain.AuctionSkills {
+	distance := skills.Distance
+	if distance == 0 {
+		distance = skills.Dist
 	}
-
-	if isAuctionNotFoundPage(doc) {
-		return domain.AuctionDetail{}, validation.NewError(validation.ErrorEntityNotFound, "auction not found", nil)
+	return domain.AuctionSkills{
+		Axe:       skills.Axe,
+		Club:      skills.Club,
+		Sword:     skills.Sword,
+		Distance:  distance,
+		Fishing:   skills.Fishing,
+		Fist:      skills.Fist,
+		Magic:     skills.Magic,
+		Shielding: skills.Shielding,
 	}
+}
 
-	auction := doc.Find("div.Auction").First()
-	if auction.Length() == 0 {
-		return domain.AuctionDetail{}, validation.NewError(validation.ErrorEntityNotFound, "auction not found", nil)
-	}
-
-	header := auction.Find(".AuctionHeader").First()
-	name := normalizeText(header.Find(".AuctionCharacterName").First().Text())
-	summaryMatch := auctionSummaryLinePattern.FindStringSubmatch(normalizeText(header.Text()))
-	if name == "" || len(summaryMatch) != 5 {
-		return domain.AuctionDetail{}, validation.NewError(validation.ErrorEntityNotFound, "auction not found", nil)
-	}
-
-	defaultStatus := "active"
-	if isPast {
-		defaultStatus = "ended"
-	}
-
-	detail := domain.AuctionDetail{
-		AuctionID:     auctionID,
-		CharacterName: name,
-		Level:         parseInt(summaryMatch[1]),
-		Vocation:      normalizeText(summaryMatch[2]),
-		Sex:           normalizeText(summaryMatch[3]),
-		World:         normalizeText(summaryMatch[4]),
-		Status:        defaultStatus,
-	}
-
-	bodyText := normalizeText(auction.Find(".AuctionBody").Text())
-	detail.BidType, detail.BidValue = parseAuctionBidTypeAndValue(bodyText)
-	detail.BidType = strings.ToLower(detail.BidType)
-	detail.AuctionStart = parseAuctionDateField(bodyText, "Start")
-	detail.AuctionEnd = parseAuctionDateField(bodyText, "End")
-
-	auctionText := strings.ToLower(auction.Text())
-	if strings.Contains(auctionText, "finished") || detail.BidType == "winning" {
-		detail.Status = "ended"
-	}
-	if strings.Contains(auctionText, "cancelled") || strings.Contains(auctionText, "canceled") {
-		detail.Status = "cancelled"
-	}
-
-	if detail.Status == "active" && detail.AuctionEnd != "" {
-		if endTime, err := time.Parse(time.RFC3339, detail.AuctionEnd); err == nil && time.Now().UTC().After(endTime) {
-			detail.Status = "ended"
+func toAuctionItems(rows []struct {
+	ItemID int    `json:"itemId"`
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+}) []domain.AuctionItem {
+	items := make([]domain.AuctionItem, 0, len(rows))
+	for _, row := range rows {
+		id := row.ItemID
+		if id == 0 {
+			id = row.ID
 		}
+		items = append(items, domain.AuctionItem{ID: id, Name: strings.TrimSpace(row.Name)})
 	}
-
-	return detail, nil
+	return items
 }
 
-func parseAuctionsTotalResults(doc *goquery.Document) int {
-	match := auctionResultsPattern.FindStringSubmatch(doc.Text())
-	if len(match) != 2 {
-		return 0
-	}
-	return parseInt(match[1])
-}
-
-func parseAuctionsTotalPages(doc *goquery.Document) int {
-	maxPage := 0
-	doc.Find("a[href*='currentpage=']").Each(func(_ int, link *goquery.Selection) {
-		href, ok := link.Attr("href")
-		if !ok {
-			return
+func toAuctionAugments(rows []struct {
+	ArgType int    `json:"argType"`
+	Text    string `json:"text"`
+	Name    string `json:"name"`
+}) []domain.AuctionAugment {
+	items := make([]domain.AuctionAugment, 0, len(rows))
+	for _, row := range rows {
+		name := strings.TrimSpace(row.Name)
+		if name == "" {
+			name = strings.TrimSpace(row.Text)
 		}
-		match := auctionPagePattern.FindStringSubmatch(href)
-		if len(match) != 2 {
-			return
-		}
-		page := parseInt(match[1])
-		if page > maxPage {
-			maxPage = page
-		}
-	})
-	return maxPage
+		items = append(items, domain.AuctionAugment{ID: row.ArgType, Name: name})
+	}
+	return items
 }
 
-func parseAuctionBidTypeAndValue(raw string) (string, int) {
-	match := auctionBidTypeValuePattern.FindStringSubmatch(raw)
-	if len(match) != 3 {
-		return "", 0
+func sexName(raw int) string {
+	if raw == 1 {
+		return "Male"
 	}
-	return normalizeText(match[1]), parseInt(match[2])
-}
-
-func parseAuctionDateField(raw string, field string) string {
-	matches := auctionDatePattern.FindAllStringSubmatch(raw, -1)
-	for _, match := range matches {
-		if len(match) != 3 {
-			continue
-		}
-		if !strings.EqualFold(normalizeText(match[1]), field) {
-			continue
-		}
-		if parsed, err := parseAuctionDateTimeToUTC(match[2]); err == nil {
-			return parsed
-		}
+	if raw == 0 {
+		return "Female"
 	}
-	return ""
-}
-
-func parseAuctionDateTimeToUTC(raw string) (string, error) {
-	clean := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(raw), "BRA"))
-	parsed, err := time.ParseInLocation("Jan 2 2006, 15:04", clean, rubinotBrazilLocation)
-	if err != nil {
-		return "", err
-	}
-	return parsed.UTC().Format(time.RFC3339), nil
-}
-
-func extractAuctionID(link *goquery.Selection) int {
-	if link == nil || link.Length() == 0 {
-		return 0
-	}
-	href, ok := link.Attr("href")
-	if !ok {
-		return 0
-	}
-	match := auctionIDPattern.FindStringSubmatch(href)
-	if len(match) != 2 {
-		return 0
-	}
-	return parseInt(match[1])
-}
-
-func isAuctionNotFoundPage(doc *goquery.Document) bool {
-	pageText := strings.ToLower(normalizeText(doc.Text()))
-	if strings.Contains(pageText, "auction details") && doc.Find("div.Auction").Length() > 0 {
-		return false
-	}
-
-	for _, pattern := range auctionNotFoundTextPatterns {
-		if pattern.MatchString(pageText) {
-			return true
-		}
-	}
-	return false
-}
-
-func shouldIgnoreAuctionSourceError(err error) bool {
-	var validationErr validation.Error
-	if !errors.As(err, &validationErr) {
-		return false
-	}
-	if validationErr.Code() != validation.ErrorUpstreamUnknown {
-		return false
-	}
-	return strings.Contains(strings.ToLower(validationErr.Error()), "404")
-}
-
-func maxInt(left, right int) int {
-	if left > right {
-		return left
-	}
-	return right
+	return "Unknown"
 }

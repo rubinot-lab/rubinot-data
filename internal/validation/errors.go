@@ -45,6 +45,7 @@ const (
 	ErrorArchiveDaysInvalid = 30006
 	ErrorPvPFilterInvalid   = 30007
 	ErrorAuctionIDInvalid   = 30008
+	ErrorEndpointDeprecated = 30009
 )
 
 const (

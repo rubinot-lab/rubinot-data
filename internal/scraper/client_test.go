@@ -202,10 +202,14 @@ func newClientForTest(t *testing.T, flaresolverrURL string, maxConcurrency int) 
 	t.Setenv("SCRAPE_MAX_CONCURRENCY", fmt.Sprintf("%d", maxConcurrency))
 	resetSharedScrapeSemaphoreForTests()
 
-	return NewClient(FetchOptions{
+	client := NewClient(FetchOptions{
 		FlareSolverrURL: flaresolverrURL,
 		MaxTimeoutMs:    120000,
 	})
+	client.browserFetcher = func(_ context.Context, _ string, _ string) ([]byte, int, error) {
+		return nil, 0, errors.New("browser fetch disabled in unit tests")
+	}
+	return client
 }
 
 func newFlareSolverrServer(t *testing.T, handler http.HandlerFunc) *httptest.Server {

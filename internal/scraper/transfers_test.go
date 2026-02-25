@@ -2,96 +2,50 @@ package scraper
 
 import (
 	"context"
-	"strings"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-func TestParseTransfersHTMLNormalFixture(t *testing.T) {
-	html := readFixture(t, "transfers", "normal.html")
-	result, err := parseTransfersHTML(TransfersFilters{Page: 1}, html)
-	if err != nil {
-		t.Fatalf("expected normal transfers fixture to parse, got error: %v", err)
-	}
-	if result.Page != 1 {
-		t.Fatalf("expected page=1, got %d", result.Page)
-	}
-	if len(result.Entries) == 0 {
-		t.Fatal("expected non-empty transfer entries")
-	}
-	if result.TotalTransfers <= 0 {
-		t.Fatalf("expected total_transfers > 0, got %d", result.TotalTransfers)
-	}
+func TestFetchTransfersFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/transfers")
+		assertQuery(t, r, "world", "15")
+		assertQuery(t, r, "level", "500")
+		assertQuery(t, r, "page", "3")
+		writeJSON(w, map[string]any{
+			"transfers": []map[string]any{{
+				"id":             123,
+				"player_id":      456,
+				"player_name":    "Hero",
+				"player_level":   500,
+				"from_world_id":  11,
+				"to_world_id":    15,
+				"transferred_at": int64(1772043027000),
+			}},
+			"totalResults": 1000,
+			"totalPages":   20,
+			"currentPage":  3,
+		})
+	}))
+	defer api.Close()
 
-	first := result.Entries[0]
-	if first.PlayerName == "" || first.Level <= 0 {
-		t.Fatalf("expected player name and level, got %+v", first)
-	}
-	if first.FormerWorld == "" || first.DestinationWorld == "" {
-		t.Fatalf("expected former/destination worlds, got %+v", first)
-	}
-	if first.TransferDate == "" || !strings.HasSuffix(first.TransferDate, "Z") {
-		t.Fatalf("expected normalized transfer_date in RFC3339 UTC, got %q", first.TransferDate)
-	}
-}
+	fs := newFlareSolverrJSONServer(t, nil)
+	defer fs.Close()
 
-func TestParseTransfersHTMLEmptyFixture(t *testing.T) {
-	html := readFixture(t, "transfers", "empty.html")
-	result, err := parseTransfersHTML(TransfersFilters{Page: 1}, html)
-	if err != nil {
-		t.Fatalf("expected empty transfers fixture to parse, got error: %v", err)
-	}
-	if result.TotalTransfers != 0 {
-		t.Fatalf("expected total_transfers=0, got %d", result.TotalTransfers)
-	}
-	if len(result.Entries) != 0 {
-		t.Fatalf("expected no entries, got %d", len(result.Entries))
-	}
-}
-
-func TestFetchTransfersHappy(t *testing.T) {
-	normalFixture := readFixture(t, "transfers", "normal.html")
-	server := newFakeFlareSolverrServer(t, func(_ string) string {
-		return normalFixture
-	})
-	defer server.Close()
-
-	result, sourceURL, err := FetchTransfers(
+	result, _, err := FetchTransfers(
 		context.Background(),
-		"https://www.rubinot.com.br",
-		TransfersFilters{Page: 1},
-		FetchOptions{FlareSolverrURL: server.URL, MaxTimeoutMs: 120000},
+		baseURLOf(api),
+		TransfersFilters{WorldID: 15, WorldName: "Belaria", MinLevel: 500, Page: 3},
+		testFetchOptions(fs.URL),
 	)
 	if err != nil {
-		t.Fatalf("expected FetchTransfers to succeed, got error: %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
-	if sourceURL != "https://www.rubinot.com.br/?subtopic=transferstatistics" {
-		t.Fatalf("unexpected source URL: %s", sourceURL)
+	if result.Page != 3 || result.TotalTransfers != 1000 {
+		t.Fatalf("unexpected pagination payload: %+v", result)
 	}
-	if len(result.Entries) == 0 {
-		t.Fatal("expected non-empty transfers response")
-	}
-}
-
-func TestBuildTransfersURLWithFilters(t *testing.T) {
-	url := buildTransfersURL(
-		"https://www.rubinot.com.br",
-		TransfersFilters{
-			WorldID:  15,
-			MinLevel: 120,
-			Page:     3,
-		},
-	)
-
-	if !strings.Contains(url, "subtopic=transferstatistics") {
-		t.Fatalf("expected transferstatistics path, got %s", url)
-	}
-	if !strings.Contains(url, "world=15") {
-		t.Fatalf("expected world filter in URL, got %s", url)
-	}
-	if !strings.Contains(url, "level=120") {
-		t.Fatalf("expected level filter in URL, got %s", url)
-	}
-	if !strings.Contains(url, "currentpage=3") {
-		t.Fatalf("expected currentpage filter in URL, got %s", url)
+	if len(result.Entries) != 1 || result.Entries[0].FormerWorld != "Auroria" {
+		t.Fatalf("unexpected transfer entries: %+v", result.Entries)
 	}
 }

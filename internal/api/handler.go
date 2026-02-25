@@ -67,13 +67,15 @@ func statusCodeFromErrorCode(code int) int {
 	case (code >= 10001 && code <= 10007) ||
 		(code >= 11001 && code <= 11008) ||
 		(code >= 14001 && code <= 14007) ||
-		(code >= 30001 && code <= 30010):
+		(code >= 30001 && code <= 30008):
 		return http.StatusBadRequest
 	}
 
 	switch code {
 	case validation.ErrorEntityNotFound:
 		return http.StatusNotFound
+	case validation.ErrorEndpointDeprecated:
+		return http.StatusGone
 	case validation.ErrorUpstreamMaintenanceMode:
 		return http.StatusServiceUnavailable
 	case validation.ErrorFlareSolverrTimeout:

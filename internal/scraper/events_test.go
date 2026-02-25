@@ -2,112 +2,54 @@ package scraper
 
 import (
 	"context"
-	"strings"
 	"testing"
 )
 
-func TestParseEventsHTMLScheduleFixture(t *testing.T) {
-	html := readFixture(t, "events", "schedule.html")
-	result, err := parseEventsHTML(html)
+const eventsHTMLFixture = `
+<html>
+  <body>
+    <span class="flex items-center gap-2">Fevereiro 2026</span>
+    <table class="w-full table-fixed border-collapse text-xs">
+      <tr><th>Seg</th><th>Ter</th><th>Qua</th><th>Qui</th><th>Sex</th><th>Sab</th><th>Dom</th></tr>
+      <tr>
+        <td><div>24</div><div>Castle</div></td>
+        <td><div>25</div><div>*Skill Event</div></td>
+      </tr>
+    </table>
+  </body>
+</html>
+`
+
+func TestParseEventsHTML(t *testing.T) {
+	result, err := parseEventsHTML(eventsHTMLFixture)
 	if err != nil {
-		t.Fatalf("expected schedule fixture to parse, got error: %v", err)
+		t.Fatalf("expected no parse error, got %v", err)
 	}
-
-	if result.Month == "" || result.Year != 2026 {
-		t.Fatalf("expected month/year in fixture, got month=%q year=%d", result.Month, result.Year)
+	if len(result.Days) != 2 {
+		t.Fatalf("expected 2 days, got %d", len(result.Days))
 	}
-	if result.LastUpdate == "" || !strings.HasSuffix(result.LastUpdate, "Z") {
-		t.Fatalf("expected UTC RFC3339 last_update, got %q", result.LastUpdate)
-	}
-	if len(result.Days) == 0 {
-		t.Fatal("expected at least one day with events")
-	}
-	if len(result.AllEvents) == 0 {
-		t.Fatal("expected non-empty all_events")
-	}
-
-	firstDay := result.Days[0]
-	if firstDay.Day <= 0 || len(firstDay.Events) == 0 {
-		t.Fatalf("unexpected first day payload: %+v", firstDay)
+	if result.Days[0].Day != 24 || len(result.AllEvents) == 0 {
+		t.Fatalf("unexpected events payload: %+v", result)
 	}
 }
 
-func TestParseEventsHTMLEmptyFixture(t *testing.T) {
-	html := readFixture(t, "events", "empty.html")
-	result, err := parseEventsHTML(html)
-	if err != nil {
-		t.Fatalf("expected empty fixture to parse, got error: %v", err)
-	}
-	if result.Year != 2027 {
-		t.Fatalf("expected year=2027 in empty fixture, got %d", result.Year)
-	}
-	if len(result.Days) != 0 {
-		t.Fatalf("expected no days with events, got %d", len(result.Days))
-	}
-	if len(result.AllEvents) != 0 {
-		t.Fatalf("expected no all_events entries, got %d", len(result.AllEvents))
-	}
-}
-
-func TestParseEventsHTMLEndingEventsFixture(t *testing.T) {
-	html := readFixture(t, "events", "ending_events.html")
-	result, err := parseEventsHTML(html)
-	if err != nil {
-		t.Fatalf("expected ending_events fixture to parse, got error: %v", err)
-	}
-
-	if len(result.Days) == 0 {
-		t.Fatal("expected non-empty days in ending_events fixture")
-	}
-
-	hasEnding := false
-	for _, day := range result.Days {
-		if len(day.EndingEvents) > 0 {
-			hasEnding = true
-			break
+func TestFetchEventsSchedule(t *testing.T) {
+	fs := newFlareSolverrJSONServer(t, func(targetURL string) string {
+		if targetURL != "https://www.rubinot.com.br/events" {
+			t.Fatalf("unexpected target URL %s", targetURL)
 		}
-	}
-	if !hasEnding {
-		t.Fatal("expected at least one day with ending events")
-	}
-}
-
-func TestFetchEventsScheduleHappy(t *testing.T) {
-	fixture := readFixture(t, "events", "schedule.html")
-	server := newFakeFlareSolverrServer(t, func(_ string) string {
-		return fixture
+		return eventsHTMLFixture
 	})
-	defer server.Close()
+	defer fs.Close()
 
-	result, sourceURL, err := FetchEventsSchedule(
-		context.Background(),
-		"https://www.rubinot.com.br",
-		3,
-		2026,
-		FetchOptions{FlareSolverrURL: server.URL, MaxTimeoutMs: 120000},
-	)
+	result, sourceURL, err := FetchEventsSchedule(context.Background(), "https://www.rubinot.com.br", 0, 0, testFetchOptions(fs.URL))
 	if err != nil {
-		t.Fatalf("expected FetchEventsSchedule to succeed, got error: %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
-	if !strings.Contains(sourceURL, "subtopic=eventcalendar") {
+	if sourceURL != "https://www.rubinot.com.br/events" {
 		t.Fatalf("unexpected source URL: %s", sourceURL)
 	}
-	if !strings.Contains(sourceURL, "calendarmonth=3") || !strings.Contains(sourceURL, "calendaryear=2026") {
-		t.Fatalf("expected month/year params in source URL, got %s", sourceURL)
-	}
-	if len(result.Days) == 0 {
-		t.Fatal("expected non-empty events result")
-	}
-}
-
-func TestBuildEventsURL(t *testing.T) {
-	base := buildEventsURL("https://www.rubinot.com.br", 0, 0)
-	if base != "https://www.rubinot.com.br/?subtopic=eventcalendar" {
-		t.Fatalf("unexpected base events URL: %s", base)
-	}
-
-	filtered := buildEventsURL("https://www.rubinot.com.br", 2, 2026)
-	if !strings.Contains(filtered, "calendarmonth=2") || !strings.Contains(filtered, "calendaryear=2026") {
-		t.Fatalf("expected month/year params in URL, got %s", filtered)
+	if len(result.Days) != 2 {
+		t.Fatalf("expected 2 days, got %d", len(result.Days))
 	}
 }

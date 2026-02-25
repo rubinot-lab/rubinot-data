@@ -2,121 +2,45 @@ package scraper
 
 import (
 	"context"
-	"strings"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-func TestParseBanishmentsHTMLNormalFixture(t *testing.T) {
-	html := readFixture(t, "banishments", "normal.html")
-	result, err := parseBanishmentsHTML("Belaria", 1, html)
+func TestFetchBanishmentsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/bans")
+		assertQuery(t, r, "world", "15")
+		assertQuery(t, r, "page", "2")
+		writeJSON(w, map[string]any{
+			"bans": []map[string]any{{
+				"account_id":     1,
+				"account_name":   "acc",
+				"main_character": "Hero",
+				"reason":         "Rule 2B",
+				"banned_at":      "1772043027",
+				"expires_at":     "-1",
+				"banned_by":      "GM",
+				"is_permanent":   true,
+			}},
+			"totalCount":  367,
+			"totalPages":  8,
+			"currentPage": 2,
+		})
+	}))
+	defer api.Close()
+
+	fs := newFlareSolverrJSONServer(t, nil)
+	defer fs.Close()
+
+	result, _, err := FetchBanishments(context.Background(), baseURLOf(api), "Belaria", 15, 2, testFetchOptions(fs.URL))
 	if err != nil {
-		t.Fatalf("expected normal fixture to parse, got error: %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
-
-	if result.World != "Belaria" {
-		t.Fatalf("expected world Belaria, got %q", result.World)
+	if result.Page != 2 || result.TotalBans != 367 {
+		t.Fatalf("unexpected page payload: %+v", result)
 	}
-	if result.Page != 1 {
-		t.Fatalf("expected page 1, got %d", result.Page)
-	}
-	if result.TotalBans != 2 {
-		t.Fatalf("expected total_bans=2, got %d", result.TotalBans)
-	}
-	if len(result.Entries) != 2 {
-		t.Fatalf("expected 2 ban entries, got %d", len(result.Entries))
-	}
-
-	first := result.Entries[0]
-	if first.Character != "Bad Actor" {
-		t.Fatalf("expected first character Bad Actor, got %+v", first)
-	}
-	if first.Date == "" || !strings.HasSuffix(first.Date, "Z") {
-		t.Fatalf("expected UTC RFC3339 date for first entry, got %q", first.Date)
-	}
-	if first.IsPermanent {
-		t.Fatalf("expected first entry to be temporary, got %+v", first)
-	}
-	if first.Duration != "7 days" {
-		t.Fatalf("expected first duration to be 7 days, got %q", first.Duration)
-	}
-
-	second := result.Entries[1]
-	if second.ExpiresAt == "" || !strings.HasSuffix(second.ExpiresAt, "Z") {
-		t.Fatalf("expected second entry expires_at in UTC RFC3339, got %q", second.ExpiresAt)
-	}
-}
-
-func TestParseBanishmentsHTMLPermanentFixture(t *testing.T) {
-	html := readFixture(t, "banishments", "permanent.html")
-	result, err := parseBanishmentsHTML("Belaria", 1, html)
-	if err != nil {
-		t.Fatalf("expected permanent fixture to parse, got error: %v", err)
-	}
-
-	if result.TotalBans != 1 {
-		t.Fatalf("expected total_bans=1, got %d", result.TotalBans)
-	}
-	if len(result.Entries) != 1 {
-		t.Fatalf("expected 1 ban entry, got %d", len(result.Entries))
-	}
-
-	entry := result.Entries[0]
-	if !entry.IsPermanent {
-		t.Fatalf("expected entry to be permanent, got %+v", entry)
-	}
-	if entry.ExpiresAt != "" {
-		t.Fatalf("expected no expires_at for permanent entry, got %q", entry.ExpiresAt)
-	}
-}
-
-func TestParseBanishmentsHTMLEmptyFixture(t *testing.T) {
-	html := readFixture(t, "banishments", "empty.html")
-	result, err := parseBanishmentsHTML("Belaria", 1, html)
-	if err != nil {
-		t.Fatalf("expected empty fixture to parse, got error: %v", err)
-	}
-	if result.TotalBans != 0 {
-		t.Fatalf("expected total_bans=0, got %d", result.TotalBans)
-	}
-	if len(result.Entries) != 0 {
-		t.Fatalf("expected no entries, got %d", len(result.Entries))
-	}
-}
-
-func TestFetchBanishmentsHappy(t *testing.T) {
-	fixture := readFixture(t, "banishments", "normal.html")
-	server := newFakeFlareSolverrServer(t, func(_ string) string {
-		return fixture
-	})
-	defer server.Close()
-
-	result, sourceURL, err := FetchBanishments(
-		context.Background(),
-		"https://www.rubinot.com.br",
-		"Belaria",
-		15,
-		1,
-		FetchOptions{FlareSolverrURL: server.URL, MaxTimeoutMs: 120000},
-	)
-	if err != nil {
-		t.Fatalf("expected FetchBanishments to succeed, got error: %v", err)
-	}
-	if sourceURL != "https://www.rubinot.com.br/?subtopic=bans&world=15" {
-		t.Fatalf("unexpected source URL: %s", sourceURL)
-	}
-	if len(result.Entries) == 0 {
-		t.Fatal("expected non-empty banishments response")
-	}
-}
-
-func TestBuildBanishmentsURLWithPage(t *testing.T) {
-	pageOneURL := buildBanishmentsURL("https://www.rubinot.com.br", 15, 1)
-	if strings.Contains(pageOneURL, "currentpage=") {
-		t.Fatalf("did not expect currentpage parameter on page 1 URL: %s", pageOneURL)
-	}
-
-	pageThreeURL := buildBanishmentsURL("https://www.rubinot.com.br", 15, 3)
-	if !strings.Contains(pageThreeURL, "currentpage=3") {
-		t.Fatalf("expected currentpage=3 in URL, got %s", pageThreeURL)
+	if len(result.Entries) != 1 || !result.Entries[0].IsPermanent {
+		t.Fatalf("unexpected entries: %+v", result.Entries)
 	}
 }
