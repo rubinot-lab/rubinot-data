@@ -272,26 +272,26 @@ func newIntegrationTestRouter(t *testing.T, flaresolverrURL string) http.Handler
 func newHappyFlareSolverrResponder(t *testing.T) func(string) fakeFlareSolverrReply {
 	t.Helper()
 	fixtures := map[string]string{
-		"worlds":           mustReadFixture(t, "worlds/overview.html"),
-		"world":            mustReadFixture(t, "world/belaria.html"),
-		"character":        mustReadFixture(t, "character/normal.html"),
-		"guild":            mustReadFixture(t, "guild/active.html"),
-		"guilds":           mustReadFixture(t, "guilds/list.html"),
-		"houses":           mustReadFixture(t, "houses/venore_list.html"),
-		"guildhalls":       mustReadFixture(t, "houses/guildhalls_list.html"),
-		"house":            mustReadFixture(t, "house/rented.html"),
-		"highscores":       mustReadFixture(t, "highscores/experience_page1.html"),
-		"killstatistics":   mustReadFixture(t, "killstatistics/normal.html"),
-		"newsArticle":      mustReadFixture(t, "news/article.html"),
-		"newsTicker":       mustReadFixture(t, "news/ticker.html"),
-		"newsArchive":      mustReadFixture(t, "news/list.html"),
-		"deaths":           mustReadFixture(t, "deaths/normal.html"),
-		"transfers":        mustReadFixture(t, "transfers/normal.html"),
-		"banishments":      mustReadFixture(t, "banishments/normal.html"),
-		"events":           mustReadFixture(t, "events/schedule.html"),
-		"auctionsCurrent":  mustReadFixture(t, "auctions/current.html"),
-		"auctionsHistory":  mustReadFixture(t, "auctions/history.html"),
-		"auctionDetail":    mustReadFixture(t, "auctions/detail_active.html"),
+		"worlds":            mustReadFixture(t, "worlds/overview.html"),
+		"world":             mustReadFixture(t, "world/belaria.html"),
+		"character":         mustReadFixture(t, "character/normal.html"),
+		"guild":             mustReadFixture(t, "guild/active.html"),
+		"guilds":            mustReadFixture(t, "guilds/list.html"),
+		"houses":            mustReadFixture(t, "houses/venore_list.html"),
+		"guildhalls":        mustReadFixture(t, "houses/guildhalls_list.html"),
+		"house":             mustReadFixture(t, "house/rented.html"),
+		"highscores":        mustReadFixture(t, "highscores/experience_page1.html"),
+		"killstatistics":    mustReadFixture(t, "killstatistics/normal.html"),
+		"newsArticle":       mustReadFixture(t, "news/article.html"),
+		"newsTicker":        mustReadFixture(t, "news/ticker.html"),
+		"newsArchive":       mustReadFixture(t, "news/list.html"),
+		"deaths":            mustReadFixture(t, "deaths/normal.html"),
+		"transfers":         mustReadFixture(t, "transfers/normal.html"),
+		"banishments":       mustReadFixture(t, "banishments/normal.html"),
+		"events":            mustReadFixture(t, "events/schedule.html"),
+		"auctionsCurrent":   mustReadFixture(t, "auctions/current.html"),
+		"auctionsHistory":   mustReadFixture(t, "auctions/history.html"),
+		"auctionDetail":     mustReadFixture(t, "auctions/detail_active.html"),
 		"auctionDetailPast": mustReadFixture(t, "auctions/detail_ended.html"),
 	}
 
@@ -358,6 +358,7 @@ func newFakeFlareSolverrServer(t *testing.T, responder func(string) fakeFlareSol
 
 	nonBootstrapCalls := &atomic.Int64{}
 	bootstrapHTML := `<html><body><select name="world"><option value="0">Select</option><option value="15">Belaria</option></select></body></html>`
+	bootstrapHousesHTML := `<html><body><label><input type="radio" name="town" value="1">Venore</label><label><input type="radio" name="town" value="2">Thais</label></body></html>`
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -372,6 +373,10 @@ func newFakeFlareSolverrServer(t *testing.T, responder func(string) fakeFlareSol
 		targetURL := payload.URL
 		if strings.Contains(targetURL, "subtopic=latestdeaths") && !strings.Contains(targetURL, "&world=") {
 			writeFakeFlareSolverrResponse(t, w, targetURL, fakeFlareSolverrReply{HTML: bootstrapHTML})
+			return
+		}
+		if strings.Contains(targetURL, "subtopic=houses") && !strings.Contains(targetURL, "world=") {
+			writeFakeFlareSolverrResponse(t, w, targetURL, fakeFlareSolverrReply{HTML: bootstrapHousesHTML})
 			return
 		}
 

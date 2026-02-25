@@ -29,6 +29,34 @@ func TestParseLatestDeathsWorldOptions(t *testing.T) {
 	}
 }
 
+func TestParseHousesTownOptions(t *testing.T) {
+	html := `
+		<html><body>
+			<label><input type="radio" name="town" value="1" checked>Venore</label>
+			<label><input type="radio" name="town" value="2">Thais</label>
+		</body></html>
+	`
+
+	towns, err := ParseHousesTownOptions(html)
+	if err != nil {
+		t.Fatalf("expected towns to parse successfully, got error: %v", err)
+	}
+	if len(towns) != 2 {
+		t.Fatalf("expected 2 towns, got %d", len(towns))
+	}
+	if towns[0].Name != "Venore" || towns[0].ID != 1 {
+		t.Fatalf("unexpected first town: %+v", towns[0])
+	}
+}
+
+func TestParseHousesTownOptionsEmpty(t *testing.T) {
+	html := `<html><body><div>no towns</div></body></html>`
+	_, err := ParseHousesTownOptions(html)
+	if err == nil {
+		t.Fatal("expected parse error for empty houses town options")
+	}
+}
+
 func TestWorldExists(t *testing.T) {
 	validator := testValidator()
 

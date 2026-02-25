@@ -27,7 +27,7 @@ type Validator struct {
 	vocationsByKey           map[string]HighscoreVocation
 }
 
-func NewValidator(worlds []World) *Validator {
+func NewValidator(worlds []World, discoveredTowns ...Town) *Validator {
 	validator := &Validator{
 		worldsByKey:              make(map[string]World),
 		townsByKey:               make(map[string]Town),
@@ -43,7 +43,12 @@ func NewValidator(worlds []World) *Validator {
 		validator.worldsByKey[key] = World{ID: world.ID, Name: strings.TrimSpace(world.Name)}
 	}
 
-	for _, town := range defaultTowns {
+	townsToLoad := defaultTowns
+	if len(discoveredTowns) > 0 {
+		townsToLoad = discoveredTowns
+	}
+
+	for _, town := range townsToLoad {
 		validator.townsByKey[normalizeLookupValue(town.Name)] = town
 	}
 	for alias, canonical := range townAliases {
@@ -89,6 +94,48 @@ func ParseLatestDeathsWorldOptions(html string) ([]World, error) {
 	}
 
 	return worlds, nil
+}
+
+func ParseHousesTownOptions(html string) ([]Town, error) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, err
+	}
+
+	uniqueByID := make(map[int]Town)
+	doc.Find("label input[name='town']").Each(func(_ int, input *goquery.Selection) {
+		idRaw, ok := input.Attr("value")
+		if !ok {
+			return
+		}
+
+		id, convErr := strconv.Atoi(strings.TrimSpace(idRaw))
+		if convErr != nil || id <= 0 {
+			return
+		}
+
+		name := strings.TrimSpace(input.Parent().Text())
+		if name == "" {
+			return
+		}
+
+		uniqueByID[id] = Town{ID: id, Name: name}
+	})
+
+	towns := make([]Town, 0, len(uniqueByID))
+	for _, town := range uniqueByID {
+		towns = append(towns, town)
+	}
+
+	sort.Slice(towns, func(i, j int) bool {
+		return towns[i].ID < towns[j].ID
+	})
+
+	if len(towns) == 0 {
+		return nil, fmt.Errorf("houses town options are empty")
+	}
+
+	return towns, nil
 }
 
 func (v *Validator) WorldExists(worldName string) (canonicalName string, worldID int, ok bool) {

@@ -695,39 +695,76 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 
 func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 	baseURL := strings.TrimRight(resolvedBaseURL, "/")
-	sourceURL := fmt.Sprintf("%s/?subtopic=latestdeaths", baseURL)
-	entity := "worlds"
+	client := scraper.NewClient(resolvedOpts)
+	refreshStarted := time.Now()
 
-	started := time.Now()
-	html, err := scraper.NewClient(resolvedOpts).Fetch(ctx, sourceURL)
+	worlds, err := discoverWorlds(ctx, client, baseURL)
 	if err != nil {
-		scraper.DiscoveryTotal.WithLabelValues(entity, "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues(entity).Observe(time.Since(started).Seconds())
 		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
-		scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
+		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
+		return nil, err
+	}
+
+	towns, err := discoverTowns(ctx, client, baseURL)
+	if err != nil {
+		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
+		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
+		return nil, err
+	}
+
+	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
+	scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
+	scraper.WorldsDiscovered.Set(float64(len(worlds)))
+	scraper.DiscoveredCount.WithLabelValues("worlds").Set(float64(len(worlds)))
+	scraper.DiscoveredCount.WithLabelValues("towns").Set(float64(len(towns)))
+
+	validator := validation.NewValidator(worlds, towns...)
+	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(validator.AllCategories())))
+	return validator, nil
+}
+
+func discoverWorlds(ctx context.Context, client *scraper.Client, baseURL string) ([]validation.World, error) {
+	sourceURL := fmt.Sprintf("%s/?subtopic=latestdeaths", baseURL)
+	started := time.Now()
+	html, err := client.Fetch(ctx, sourceURL)
+	if err != nil {
+		scraper.DiscoveryTotal.WithLabelValues("worlds", "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
 		return nil, err
 	}
 
 	worlds, err := validation.ParseLatestDeathsWorldOptions(html)
 	if err != nil {
-		scraper.DiscoveryTotal.WithLabelValues(entity, "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues(entity).Observe(time.Since(started).Seconds())
-		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
-		scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
+		scraper.DiscoveryTotal.WithLabelValues("worlds", "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
 		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator world bootstrap failed: %v", err), err)
 	}
 
-	scraper.DiscoveryTotal.WithLabelValues(entity, "ok").Inc()
-	scraper.DiscoveryDuration.WithLabelValues(entity).Observe(time.Since(started).Seconds())
-	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
-	scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
-	scraper.WorldsDiscovered.Set(float64(len(worlds)))
-	scraper.DiscoveredCount.WithLabelValues("worlds").Set(float64(len(worlds)))
+	scraper.DiscoveryTotal.WithLabelValues("worlds", "ok").Inc()
+	scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
+	return worlds, nil
+}
 
-	validator := validation.NewValidator(worlds)
-	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(validator.AllCategories())))
-	scraper.DiscoveredCount.WithLabelValues("towns").Set(float64(len(validator.AllTowns())))
-	return validator, nil
+func discoverTowns(ctx context.Context, client *scraper.Client, baseURL string) ([]validation.Town, error) {
+	sourceURL := fmt.Sprintf("%s/?subtopic=houses", baseURL)
+	started := time.Now()
+	html, err := client.Fetch(ctx, sourceURL)
+	if err != nil {
+		scraper.DiscoveryTotal.WithLabelValues("towns", "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues("towns").Observe(time.Since(started).Seconds())
+		return nil, err
+	}
+
+	towns, err := validation.ParseHousesTownOptions(html)
+	if err != nil {
+		scraper.DiscoveryTotal.WithLabelValues("towns", "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues("towns").Observe(time.Since(started).Seconds())
+		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator town bootstrap failed: %v", err), err)
+	}
+
+	scraper.DiscoveryTotal.WithLabelValues("towns", "ok").Inc()
+	scraper.DiscoveryDuration.WithLabelValues("towns").Observe(time.Since(started).Seconds())
+	return towns, nil
 }
 
 func startValidatorRefresh() {
