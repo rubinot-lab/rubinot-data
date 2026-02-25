@@ -69,6 +69,13 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getWorld(c, validator)
 		}))
+		v1.GET("/highscores/categories", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return endpointResult{
+				PayloadKey: "categories",
+				Payload:    validator.AllCategories(),
+				Sources:    []string{},
+			}, nil
+		}))
 		v1.GET("/highscores/:world", redirectHighscoresWorld)
 		v1.GET("/highscores/:world/:category", redirectHighscoresCategory)
 		v1.GET("/highscores/:world/:category/:vocation/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
@@ -121,6 +128,13 @@ func NewRouter() (*gin.Engine, error) {
 		}))
 		v1.GET("/house/:world/:house_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getHouse(c, validator)
+		}))
+		v1.GET("/houses/towns", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return endpointResult{
+				PayloadKey: "towns",
+				Payload:    validator.AllTowns(),
+				Sources:    []string{},
+			}, nil
 		}))
 		v1.GET("/houses/:world/:town", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getHouses(c, validator)
