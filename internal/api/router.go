@@ -696,10 +696,13 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 	baseURL := strings.TrimRight(resolvedBaseURL, "/")
 	sourceURL := fmt.Sprintf("%s/?subtopic=latestdeaths", baseURL)
+	entity := "worlds"
 
 	started := time.Now()
 	html, err := scraper.NewClient(resolvedOpts).Fetch(ctx, sourceURL)
 	if err != nil {
+		scraper.DiscoveryTotal.WithLabelValues(entity, "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues(entity).Observe(time.Since(started).Seconds())
 		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
 		scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
 		return nil, err
@@ -707,16 +710,24 @@ func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 
 	worlds, err := validation.ParseLatestDeathsWorldOptions(html)
 	if err != nil {
+		scraper.DiscoveryTotal.WithLabelValues(entity, "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues(entity).Observe(time.Since(started).Seconds())
 		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
 		scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
 		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator world bootstrap failed: %v", err), err)
 	}
 
+	scraper.DiscoveryTotal.WithLabelValues(entity, "ok").Inc()
+	scraper.DiscoveryDuration.WithLabelValues(entity).Observe(time.Since(started).Seconds())
 	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
 	scraper.ValidatorRefreshDuration.Observe(time.Since(started).Seconds())
 	scraper.WorldsDiscovered.Set(float64(len(worlds)))
+	scraper.DiscoveredCount.WithLabelValues("worlds").Set(float64(len(worlds)))
 
-	return validation.NewValidator(worlds), nil
+	validator := validation.NewValidator(worlds)
+	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(validator.AllCategories())))
+	scraper.DiscoveredCount.WithLabelValues("towns").Set(float64(len(validator.AllTowns())))
+	return validator, nil
 }
 
 func startValidatorRefresh() {

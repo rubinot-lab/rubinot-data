@@ -101,6 +101,28 @@ var (
 			Help: "Total players online across all worlds",
 		},
 	)
+	DiscoveryTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rubinotdata_discovery_total",
+			Help: "Total entity discovery attempts by entity and status",
+		},
+		[]string{"entity", "status"},
+	)
+	DiscoveryDuration = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Name:    "rubinotdata_discovery_duration_seconds",
+			Help:    "Duration of entity discovery operations by entity",
+			Buckets: []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30},
+		},
+		[]string{"entity"},
+	)
+	DiscoveredCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "rubinotdata_discovered_count",
+			Help: "Discovered entity counts for worlds, categories, and towns",
+		},
+		[]string{"entity"},
+	)
 	ValidatorRefresh = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "rubinotdata_validator_refresh_total",
@@ -162,6 +184,9 @@ func init() {
 		WorldsDiscovered,
 		WorldPlayersOnline,
 		WorldsTotalPlayersOnline,
+		DiscoveryTotal,
+		DiscoveryDuration,
+		DiscoveredCount,
 		ValidatorRefresh,
 		ValidatorRefreshDuration,
 		CacheRequests,
