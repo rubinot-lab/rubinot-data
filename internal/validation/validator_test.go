@@ -57,6 +57,41 @@ func TestParseHousesTownOptionsEmpty(t *testing.T) {
 	}
 }
 
+func TestParseHighscoresCategoryOptions(t *testing.T) {
+	html := `
+		<html><body>
+			<select name="category">
+				<option value="17">Achievements</option>
+				<option value="6">Experience Points</option>
+				<option value="99">New Ranking</option>
+			</select>
+		</body></html>
+	`
+
+	categories, err := ParseHighscoresCategoryOptions(html)
+	if err != nil {
+		t.Fatalf("expected highscores categories to parse successfully, got error: %v", err)
+	}
+	if len(categories) != 3 {
+		t.Fatalf("expected 3 categories, got %d", len(categories))
+	}
+
+	if categories[0].ID != 6 || categories[0].Slug != "experience" {
+		t.Fatalf("unexpected first category: %+v", categories[0])
+	}
+	if categories[2].ID != 99 || categories[2].Slug != "new-ranking" {
+		t.Fatalf("unexpected fallback category slug: %+v", categories[2])
+	}
+}
+
+func TestParseHighscoresCategoryOptionsEmpty(t *testing.T) {
+	html := `<html><body><div>no categories</div></body></html>`
+	_, err := ParseHighscoresCategoryOptions(html)
+	if err == nil {
+		t.Fatal("expected parse error for empty highscores category options")
+	}
+}
+
 func TestWorldExists(t *testing.T) {
 	validator := testValidator()
 

@@ -712,14 +712,22 @@ func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 		return nil, err
 	}
 
+	categories, err := discoverCategories(ctx, client, baseURL, worlds[0].ID)
+	if err != nil {
+		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
+		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
+		return nil, err
+	}
+
 	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
 	scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
 	scraper.WorldsDiscovered.Set(float64(len(worlds)))
 	scraper.DiscoveredCount.WithLabelValues("worlds").Set(float64(len(worlds)))
 	scraper.DiscoveredCount.WithLabelValues("towns").Set(float64(len(towns)))
+	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(categories)))
 
 	validator := validation.NewValidator(worlds, towns...)
-	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(validator.AllCategories())))
+	validator.ReplaceHighscoreCategories(categories)
 	return validator, nil
 }
 
@@ -765,6 +773,32 @@ func discoverTowns(ctx context.Context, client *scraper.Client, baseURL string) 
 	scraper.DiscoveryTotal.WithLabelValues("towns", "ok").Inc()
 	scraper.DiscoveryDuration.WithLabelValues("towns").Observe(time.Since(started).Seconds())
 	return towns, nil
+}
+
+func discoverCategories(ctx context.Context, client *scraper.Client, baseURL string, bootstrapWorldID int) ([]validation.HighscoreCategory, error) {
+	sourceURL := fmt.Sprintf(
+		"%s/?subtopic=highscores&world=%d&category=6&currentpage=1&profession=0",
+		baseURL,
+		bootstrapWorldID,
+	)
+	started := time.Now()
+	html, err := client.Fetch(ctx, sourceURL)
+	if err != nil {
+		scraper.DiscoveryTotal.WithLabelValues("categories", "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues("categories").Observe(time.Since(started).Seconds())
+		return nil, err
+	}
+
+	categories, err := validation.ParseHighscoresCategoryOptions(html)
+	if err != nil {
+		scraper.DiscoveryTotal.WithLabelValues("categories", "error").Inc()
+		scraper.DiscoveryDuration.WithLabelValues("categories").Observe(time.Since(started).Seconds())
+		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator category bootstrap failed: %v", err), err)
+	}
+
+	scraper.DiscoveryTotal.WithLabelValues("categories", "ok").Inc()
+	scraper.DiscoveryDuration.WithLabelValues("categories").Observe(time.Since(started).Seconds())
+	return categories, nil
 }
 
 func startValidatorRefresh() {

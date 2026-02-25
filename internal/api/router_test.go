@@ -359,6 +359,8 @@ func newFakeFlareSolverrServer(t *testing.T, responder func(string) fakeFlareSol
 	nonBootstrapCalls := &atomic.Int64{}
 	bootstrapHTML := `<html><body><select name="world"><option value="0">Select</option><option value="15">Belaria</option></select></body></html>`
 	bootstrapHousesHTML := `<html><body><label><input type="radio" name="town" value="1">Venore</label><label><input type="radio" name="town" value="2">Thais</label></body></html>`
+	bootstrapHighscoresHTML := `<html><body><select name="category"><option value="17">Achievements</option><option value="6">Experience Points</option></select></body></html>`
+	bootstrapHighscoresServed := &atomic.Bool{}
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -377,6 +379,10 @@ func newFakeFlareSolverrServer(t *testing.T, responder func(string) fakeFlareSol
 		}
 		if strings.Contains(targetURL, "subtopic=houses") && !strings.Contains(targetURL, "world=") {
 			writeFakeFlareSolverrResponse(t, w, targetURL, fakeFlareSolverrReply{HTML: bootstrapHousesHTML})
+			return
+		}
+		if strings.Contains(targetURL, "subtopic=highscores") && !bootstrapHighscoresServed.Swap(true) {
+			writeFakeFlareSolverrResponse(t, w, targetURL, fakeFlareSolverrReply{HTML: bootstrapHighscoresHTML})
 			return
 		}
 

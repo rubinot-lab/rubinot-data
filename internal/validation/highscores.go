@@ -1,6 +1,13 @@
 package validation
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/PuerkitoBio/goquery"
+)
 
 type HighscoreCategory struct {
 	ID   int
@@ -61,6 +68,83 @@ func (v *Validator) ResolveHighscoreVocation(vocation string) (HighscoreVocation
 		return HighscoreVocation{}, false
 	}
 	return resolved, true
+}
+
+func (v *Validator) ReplaceHighscoreCategories(categories []HighscoreCategory) {
+	if len(categories) == 0 {
+		return
+	}
+
+	v.highscoreCategoriesByKey = make(map[string]HighscoreCategory)
+	for _, category := range categories {
+		v.highscoreCategoriesByKey[normalizeLookupValue(category.Slug)] = category
+		v.highscoreCategoriesByKey[normalizeLookupValue(category.Name)] = category
+	}
+
+	for alias, canonical := range highscoreCategoryAliases {
+		category, ok := v.highscoreCategoriesByKey[normalizeLookupValue(canonical)]
+		if !ok {
+			continue
+		}
+		v.highscoreCategoriesByKey[normalizeLookupValue(alias)] = category
+	}
+}
+
+func ParseHighscoresCategoryOptions(html string) ([]HighscoreCategory, error) {
+	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
+	if err != nil {
+		return nil, err
+	}
+
+	knownByID := make(map[int]HighscoreCategory)
+	for _, category := range highscoreCategories {
+		knownByID[category.ID] = category
+	}
+
+	uniqueByID := make(map[int]HighscoreCategory)
+	doc.Find("select[name='category'] option").Each(func(_ int, option *goquery.Selection) {
+		idRaw, ok := option.Attr("value")
+		if !ok {
+			return
+		}
+
+		id, convErr := strconv.Atoi(strings.TrimSpace(idRaw))
+		if convErr != nil || id <= 0 {
+			return
+		}
+
+		name := strings.TrimSpace(option.Text())
+		if name == "" {
+			return
+		}
+
+		if known, knownOK := knownByID[id]; knownOK {
+			uniqueByID[id] = known
+			return
+		}
+
+		slug := strings.ReplaceAll(normalizeLookupValue(name), " ", "-")
+		uniqueByID[id] = HighscoreCategory{
+			ID:   id,
+			Name: name,
+			Slug: slug,
+		}
+	})
+
+	categories := make([]HighscoreCategory, 0, len(uniqueByID))
+	for _, category := range uniqueByID {
+		categories = append(categories, category)
+	}
+
+	sort.Slice(categories, func(i, j int) bool {
+		return categories[i].ID < categories[j].ID
+	})
+
+	if len(categories) == 0 {
+		return nil, fmt.Errorf("highscores category options are empty")
+	}
+
+	return categories, nil
 }
 
 func (v *Validator) loadHighscores() {
