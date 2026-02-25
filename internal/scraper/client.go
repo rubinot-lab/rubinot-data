@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,6 +59,8 @@ var (
 	scrapeSemaphore     chan struct{}
 	sharedHTTPOnce      sync.Once
 	sharedHTTPClient    *resty.Client
+	htmlTagPattern      = regexp.MustCompile(`<[^>]+>`)
+	maintenancePattern  = regexp.MustCompile(`(?is)server\s+is\s+under\s+maintenance,\s*please\s+visit\s+later\.?`)
 )
 
 func sharedRestyClient() *resty.Client {
@@ -138,7 +141,7 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 	case http.StatusServiceUnavailable:
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		UpstreamMaintenance.Inc()
-		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, fmt.Sprintf("target returned maintenance status via flaresolverr: %d", out.Solution.Status), nil)
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
 	case http.StatusForbidden:
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		return "", validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("target returned forbidden status via flaresolverr: %d", out.Solution.Status), nil)
@@ -154,10 +157,10 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 		CloudflareChallenges.Inc()
 		return "", validation.NewError(validation.ErrorCloudflareChallengePresent, "cloudflare challenge page still present after flaresolverr", nil)
 	}
-	if strings.Contains(lowerHTML, "maintenance") {
+	if containsMaintenanceMessage(html) {
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		UpstreamMaintenance.Inc()
-		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, "upstream maintenance mode detected", nil)
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
 	}
 
 	FlareSolverrRequests.WithLabelValues("ok").Inc()
@@ -256,6 +259,15 @@ func isTimeoutError(err error) bool {
 func isTimeoutText(text string) bool {
 	lower := strings.ToLower(text)
 	return strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded")
+}
+
+func containsMaintenanceMessage(html string) bool {
+	if maintenancePattern.MatchString(html) {
+		return true
+	}
+
+	withoutTags := htmlTagPattern.ReplaceAllString(html, " ")
+	return maintenancePattern.MatchString(withoutTags)
 }
 
 func envInt(key string, fallback int) int {

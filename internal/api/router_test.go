@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/giovannirco/rubinot-data/internal/validation"
 )
 
 type fakeFlareSolverrReply struct {
@@ -190,6 +192,57 @@ func TestRouterIntegrationUpstreamErrors(t *testing.T) {
 
 			body := decodeJSONBody(t, rec)
 			assertEnvelope(t, body, http.StatusBadGateway, 20002)
+		})
+	}
+}
+
+func TestRouterIntegrationUpstreamMaintenance(t *testing.T) {
+	flaresolverrServer, _ := newFakeFlareSolverrServer(t, func(_ string) fakeFlareSolverrReply {
+		return fakeFlareSolverrReply{
+			TargetStatus: http.StatusServiceUnavailable,
+			HTML:         "<html><body>Server is under maintenance, please visit later.</body></html>",
+		}
+	})
+	defer flaresolverrServer.Close()
+
+	router := newIntegrationTestRouter(t, flaresolverrServer.URL)
+
+	testCases := []struct {
+		name string
+		path string
+	}{
+		{name: "E1 worlds", path: "/v1/worlds"},
+		{name: "E2 world", path: "/v1/world/Belaria"},
+		{name: "E3 character", path: "/v1/character/Test%20Character"},
+		{name: "E4 guild", path: "/v1/guild/Test%20Guild"},
+		{name: "E5 guilds", path: "/v1/guilds/Belaria"},
+		{name: "E6 houses", path: "/v1/houses/Belaria/Venore"},
+		{name: "E7 house", path: "/v1/house/Belaria/50"},
+		{name: "E8 highscores", path: "/v1/highscores/Belaria/experience/all/1"},
+		{name: "E9 killstatistics", path: "/v1/killstatistics/Belaria"},
+		{name: "E10 news by id", path: "/v1/news/id/140"},
+		{name: "E11 news archive", path: "/v1/news/archive?days=90"},
+		{name: "E11 news latest", path: "/v1/news/latest"},
+		{name: "E11 news newsticker", path: "/v1/news/newsticker"},
+		{name: "E12 deaths", path: "/v1/deaths/Belaria"},
+		{name: "E13 transfers", path: "/v1/transfers"},
+		{name: "E14 banishments", path: "/v1/banishments/Belaria"},
+		{name: "E15 events", path: "/v1/events/schedule"},
+		{name: "E16 auctions current", path: "/v1/auctions/current/1"},
+		{name: "E17 auctions history", path: "/v1/auctions/history/1"},
+		{name: "E18 auction detail", path: "/v1/auctions/193226"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := performRequest(t, router, http.MethodGet, tc.path)
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("expected status %d, got %d: %s", http.StatusServiceUnavailable, rec.Code, rec.Body.String())
+			}
+
+			body := decodeJSONBody(t, rec)
+			assertEnvelope(t, body, http.StatusServiceUnavailable, validation.ErrorUpstreamMaintenanceMode)
+			assertEnvelopeMessage(t, body, validation.UpstreamMaintenanceMessage)
 		})
 	}
 }
@@ -478,6 +531,29 @@ func assertEnvelope(t *testing.T, body map[string]any, expectedHTTPCode int, exp
 
 	if got := toInt(t, status["error"]); got != expectedErrorCode {
 		t.Fatalf("expected information.status.error=%d, got %d", expectedErrorCode, got)
+	}
+}
+
+func assertEnvelopeMessage(t *testing.T, body map[string]any, expectedMessage string) {
+	t.Helper()
+
+	information, ok := body["information"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing information envelope in body: %+v", body)
+	}
+
+	status, ok := information["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing information.status in body: %+v", body)
+	}
+
+	message, ok := status["message"].(string)
+	if !ok {
+		t.Fatalf("missing information.status.message in body: %+v", status)
+	}
+
+	if message != expectedMessage {
+		t.Fatalf("expected information.status.message=%q, got %q", expectedMessage, message)
 	}
 }
 

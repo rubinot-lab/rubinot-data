@@ -47,6 +47,10 @@ const (
 	ErrorAuctionIDInvalid   = 30008
 )
 
+const (
+	UpstreamMaintenanceMessage = "Server is under maintenance, please visit later."
+)
+
 type Error struct {
 	code    int
 	message string
