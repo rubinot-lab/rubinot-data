@@ -9,6 +9,15 @@ Go API that scrapes `rubinot.com.br` through FlareSolverr and exposes normalized
 - Validation-first routing: implemented (invalid inputs are rejected before scrape)
 - Time normalization: Brazilian upstream timestamps converted to UTC RFC3339 where parser supports date fields
 
+## Data platform roadmap
+
+`rubinot-data` is currently the live scrape layer. Next in the stack:
+
+- `rubinot-api` (new): consume `rubinot-data`, persist historical snapshots into PostgreSQL, process stats and progression, and expose long-term endpoints.
+- `rubinot-eve` (new): consume `rubinot-api` and provide visualization + analytics experiences for players/guilds/worlds.
+
+Both repos are scaffolded for Buildah + ArgoCD GitOps workflows.
+
 ## Requirements
 
 - Go 1.23+
