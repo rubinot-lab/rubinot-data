@@ -1,5 +1,7 @@
 package validation
 
+import "sort"
+
 type HighscoreCategory struct {
 	ID   int
 	Name string
@@ -26,6 +28,23 @@ func (v *Validator) ResolveHighscoreCategory(category string) (HighscoreCategory
 		return HighscoreCategory{}, false
 	}
 	return categoryRef, true
+}
+
+func (v *Validator) AllCategories() []HighscoreCategory {
+	uniqueByID := make(map[int]HighscoreCategory)
+	for _, category := range v.highscoreCategoriesByKey {
+		uniqueByID[category.ID] = category
+	}
+
+	allCategories := make([]HighscoreCategory, 0, len(uniqueByID))
+	for _, category := range uniqueByID {
+		allCategories = append(allCategories, category)
+	}
+
+	sort.Slice(allCategories, func(i, j int) bool {
+		return allCategories[i].ID < allCategories[j].ID
+	})
+	return allCategories
 }
 
 func (v *Validator) ResolveVocation(vocation string) (string, bool) {
