@@ -269,90 +269,22 @@ func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error
 		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("invalid API URL: %v", err), err)
 	}
 
-	cookies, userAgent, err := c.getOrRefreshCookies(ctx, origin)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to create request: %v", err), err)
-	}
-	req.Header.Set("Origin", origin)
-	req.Header.Set("Referer", origin+"/")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9,pt-BR;q=0.8")
-	if strings.TrimSpace(userAgent) == "" {
-		userAgent = defaultBrowserUserAgent
-	}
-	req.Header.Set("User-Agent", userAgent)
-	for _, cookie := range cookies {
-		req.AddCookie(cookie)
-	}
-
-	resp, err := c.directHTTP.Do(req)
-	if err != nil {
-		return mapClientError(err)
-	}
-	defer resp.Body.Close()
-
-	UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), strconv.Itoa(resp.StatusCode)).Inc()
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		UpstreamMaintenance.Inc()
-		return validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to read response body: %v", err), err)
-	}
-
-	statusCode := resp.StatusCode
-	if c.shouldFallbackToBrowser(statusCode, body) && c.browserFetcher != nil {
-		browserBody, browserStatus, browserErr := c.browserFetcher(ctx, apiURL, origin)
-		if browserErr == nil {
-			body = browserBody
-			statusCode = browserStatus
-			UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), fmt.Sprintf("%d-browser", browserStatus)).Inc()
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		shouldRetry, attemptErr := c.fetchJSONAttempt(ctx, apiURL, origin, result)
+		if attemptErr == nil {
+			return nil
 		}
-	}
-
-	var errResp struct {
-		Error string `json:"error"`
-	}
-	if json.Unmarshal(body, &errResp) == nil && strings.TrimSpace(errResp.Error) != "" {
-		lower := strings.ToLower(errResp.Error)
-		switch {
-		case strings.Contains(lower, "maintenance"):
-			UpstreamMaintenance.Inc()
-			return validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
-		case strings.Contains(lower, "access denied"):
-			c.cookieCache.reset()
-			return validation.NewError(validation.ErrorUpstreamForbidden, "API access denied", nil)
-		default:
-			if resp.StatusCode == http.StatusNotFound {
-				return validation.NewError(validation.ErrorEntityNotFound, errResp.Error, nil)
-			}
-			return validation.NewError(validation.ErrorUpstreamUnknown, errResp.Error, nil)
+		lastErr = attemptErr
+		if !shouldRetry || attempt == 2 {
+			return attemptErr
 		}
-	}
 
-	switch statusCode {
-	case http.StatusOK:
-	case http.StatusForbidden, http.StatusUnauthorized:
 		c.cookieCache.reset()
-		return validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("API returned %d", statusCode), nil)
-	case http.StatusNotFound:
-		return validation.NewError(validation.ErrorEntityNotFound, "entity not found", nil)
-	default:
-		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("API returned %d", statusCode), nil)
+		time.Sleep(time.Duration(attempt+1) * 300 * time.Millisecond)
 	}
 
-	if err := json.Unmarshal(body, result); err != nil {
-		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to decode JSON: %v", err), err)
-	}
-
-	return nil
+	return lastErr
 }
 
 func (c *Client) shouldFallbackToBrowser(statusCode int, body []byte) bool {
@@ -375,6 +307,101 @@ func (c *Client) shouldFallbackToBrowser(statusCode int, body []byte) bool {
 	}
 
 	return false
+}
+
+func (c *Client) fetchJSONAttempt(ctx context.Context, apiURL, origin string, result any) (bool, error) {
+	cookies, userAgent, err := c.getOrRefreshCookies(ctx, origin)
+	if err != nil {
+		return false, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return false, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to create request: %v", err), err)
+	}
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Referer", origin+"/")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9,pt-BR;q=0.8")
+	if strings.TrimSpace(userAgent) == "" {
+		userAgent = defaultBrowserUserAgent
+	}
+	req.Header.Set("User-Agent", userAgent)
+	for _, cookie := range cookies {
+		req.AddCookie(cookie)
+	}
+
+	resp, err := c.directHTTP.Do(req)
+	if err != nil {
+		return true, mapClientError(err)
+	}
+	defer resp.Body.Close()
+
+	UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), strconv.Itoa(resp.StatusCode)).Inc()
+	if resp.StatusCode == http.StatusServiceUnavailable {
+		UpstreamMaintenance.Inc()
+		return false, validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return true, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to read response body: %v", err), err)
+	}
+
+	statusCode := resp.StatusCode
+	if c.shouldFallbackToBrowser(statusCode, body) && c.browserFetcher != nil {
+		browserBody, browserStatus, browserErr := c.browserFetcher(ctx, apiURL, origin)
+		if browserErr == nil {
+			body = browserBody
+			statusCode = browserStatus
+			UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), fmt.Sprintf("%d-browser", browserStatus)).Inc()
+		}
+	}
+
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &errResp) == nil && strings.TrimSpace(errResp.Error) != "" {
+		lower := strings.ToLower(errResp.Error)
+		switch {
+		case strings.Contains(lower, "maintenance"):
+			UpstreamMaintenance.Inc()
+			return false, validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+		case strings.Contains(lower, "access denied"):
+			return true, validation.NewError(validation.ErrorUpstreamForbidden, "API access denied", nil)
+		default:
+			if statusCode == http.StatusNotFound {
+				return false, validation.NewError(validation.ErrorEntityNotFound, errResp.Error, nil)
+			}
+			if statusCode >= http.StatusInternalServerError {
+				return true, validation.NewError(validation.ErrorUpstreamUnknown, errResp.Error, nil)
+			}
+			return false, validation.NewError(validation.ErrorUpstreamUnknown, errResp.Error, nil)
+		}
+	}
+
+	switch statusCode {
+	case http.StatusOK:
+	case http.StatusForbidden, http.StatusUnauthorized:
+		return true, validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("API returned %d", statusCode), nil)
+	case http.StatusNotFound:
+		return false, validation.NewError(validation.ErrorEntityNotFound, "entity not found", nil)
+	default:
+		if statusCode >= http.StatusInternalServerError {
+			return true, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("API returned %d", statusCode), nil)
+		}
+		return false, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("API returned %d", statusCode), nil)
+	}
+
+	if err := json.Unmarshal(body, result); err != nil {
+		// Retry when upstream returned challenge/HTML instead of JSON.
+		if c.shouldFallbackToBrowser(http.StatusOK, body) {
+			return true, validation.NewError(validation.ErrorUpstreamForbidden, "upstream returned challenge payload", err)
+		}
+		return false, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to decode JSON: %v", err), err)
+	}
+
+	return false, nil
 }
 
 func (c *Client) getOrRefreshCookies(ctx context.Context, origin string) ([]*http.Cookie, string, error) {
