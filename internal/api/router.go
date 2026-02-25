@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -22,8 +24,9 @@ const (
 )
 
 var (
-	resolvedBaseURL string
-	resolvedOpts    scraper.FetchOptions
+	resolvedBaseURL  string
+	resolvedOpts     scraper.FetchOptions
+	currentValidator atomic.Pointer[validation.Validator]
 )
 
 func NewRouter() (*gin.Engine, error) {
@@ -34,6 +37,8 @@ func NewRouter() (*gin.Engine, error) {
 	if err != nil {
 		return nil, err
 	}
+	currentValidator.Store(validator)
+	startValidatorRefresh()
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -67,9 +72,10 @@ func NewRouter() (*gin.Engine, error) {
 	{
 		v1.GET("/worlds", handleEndpoint(getWorlds))
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getWorld(c, validator)
+			return getWorld(c, getValidator())
 		}))
 		v1.GET("/highscores/categories", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			validator := getValidator()
 			return endpointResult{
 				PayloadKey: "categories",
 				Payload:    validator.AllCategories(),
@@ -79,10 +85,10 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/highscores/:world", redirectHighscoresWorld)
 		v1.GET("/highscores/:world/:category", redirectHighscoresCategory)
 		v1.GET("/highscores/:world/:category/:vocation/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getHighscores(c, validator)
+			return getHighscores(c, getValidator())
 		}))
 		v1.GET("/killstatistics/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getKillstatistics(c, validator)
+			return getKillstatistics(c, getValidator())
 		}))
 		v1.GET("/news/id/:news_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getNewsByID(c)
@@ -109,13 +115,13 @@ func NewRouter() (*gin.Engine, error) {
 			return getAuctionDetail(c)
 		}))
 		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getDeaths(c, validator)
+			return getDeaths(c, getValidator())
 		}))
 		v1.GET("/banishments/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getBanishments(c, validator)
+			return getBanishments(c, getValidator())
 		}))
 		v1.GET("/transfers", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getTransfers(c, validator)
+			return getTransfers(c, getValidator())
 		}))
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCharacter(c)
@@ -124,12 +130,13 @@ func NewRouter() (*gin.Engine, error) {
 			return getGuild(c)
 		}))
 		v1.GET("/guilds/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getGuilds(c, validator)
+			return getGuilds(c, getValidator())
 		}))
 		v1.GET("/house/:world/:house_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getHouse(c, validator)
+			return getHouse(c, getValidator())
 		}))
 		v1.GET("/houses/towns", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			validator := getValidator()
 			return endpointResult{
 				PayloadKey: "towns",
 				Payload:    validator.AllTowns(),
@@ -137,7 +144,7 @@ func NewRouter() (*gin.Engine, error) {
 			}, nil
 		}))
 		v1.GET("/houses/:world/:town", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getHouses(c, validator)
+			return getHouses(c, getValidator())
 		}))
 	}
 
@@ -710,6 +717,30 @@ func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 	scraper.WorldsDiscovered.Set(float64(len(worlds)))
 
 	return validation.NewValidator(worlds), nil
+}
+
+func startValidatorRefresh() {
+	interval := time.Duration(getEnvInt("VALIDATOR_REFRESH_INTERVAL_SECONDS", 3600)) * time.Second
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for range ticker.C {
+			validator, err := bootstrapValidator(context.Background())
+			if err != nil {
+				log.Printf("validator refresh failed: %v", err)
+				continue
+			}
+			currentValidator.Store(validator)
+		}
+	}()
+}
+
+func getValidator() *validation.Validator {
+	validator := currentValidator.Load()
+	if validator == nil {
+		panic("validator is not initialized")
+	}
+	return validator
 }
 
 func scrapeFetchOptions() scraper.FetchOptions {
