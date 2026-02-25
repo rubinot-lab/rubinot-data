@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -151,6 +152,12 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 	}
 
 	html := out.Solution.Response
+	if isMaintenanceURL(out.Solution.URL) {
+		FlareSolverrRequests.WithLabelValues("ok").Inc()
+		UpstreamMaintenance.Inc()
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+	}
+
 	lowerHTML := strings.ToLower(html)
 	if strings.Contains(lowerHTML, "just a moment") || strings.Contains(lowerHTML, "cf-browser-verification") {
 		FlareSolverrRequests.WithLabelValues("cf_challenge").Inc()
@@ -268,6 +275,16 @@ func containsMaintenanceMessage(html string) bool {
 
 	withoutTags := htmlTagPattern.ReplaceAllString(html, " ")
 	return maintenancePattern.MatchString(withoutTags)
+}
+
+func isMaintenanceURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+
+	path := strings.ToLower(strings.TrimRight(parsed.Path, "/"))
+	return path == "/maintenance"
 }
 
 func envInt(key string, fallback int) int {
