@@ -136,6 +136,21 @@ func TestBuildDeathsURLWithFilters(t *testing.T) {
 	}
 }
 
+func TestParseDeathsHTMLAcceptsSingleDigitHour(t *testing.T) {
+	html := `<table class="TableContent"><tr bgcolor="#F1E0C6"><td>1.</td><td><small>25.02.2026, 1:16:26</small></td><td><a href="https://rubinot.com.br/?characters/Test">Test</a> died at level <strong>708</strong> by werehyaena.</td></tr></table>`
+
+	result, err := parseDeathsHTML("Belaria", DeathsFilters{}, html)
+	if err != nil {
+		t.Fatalf("expected parser to accept single-digit hour format, got error: %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("expected 1 parsed entry, got %d", len(result.Entries))
+	}
+	if result.Entries[0].Victim.Name != "Test" {
+		t.Fatalf("unexpected victim name: %q", result.Entries[0].Victim.Name)
+	}
+}
+
 func boolPtr(value bool) *bool {
 	return &value
 }

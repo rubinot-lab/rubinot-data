@@ -16,7 +16,7 @@ import (
 
 var (
 	deathRowIndexPattern = regexp.MustCompile(`^\d+\.$`)
-	deathDatePattern     = regexp.MustCompile(`\d{2}\.\d{2}\.\d{4},\s*\d{2}:\d{2}:\d{2}`)
+	deathDatePattern     = regexp.MustCompile(`\d{1,2}\.\d{1,2}\.\d{4},\s*\d{1,2}:\d{2}:\d{2}`)
 	deathLevelPattern    = regexp.MustCompile(`(?i)\bat level\s+(\d+)`)
 	deathByPattern       = regexp.MustCompile(`(?i)\bby\s+(.+?)(?:\.\s*$|$)`)
 	noDeathsPattern      = regexp.MustCompile(`(?i)no one died on`)
