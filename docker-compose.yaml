@@ -2,20 +2,32 @@ services:
   flaresolverr:
     image: ghcr.io/flaresolverr/flaresolverr:latest
     restart: unless-stopped
+    volumes:
+      - ./scripts/uc_patched_init.py:/app/undetected_chromedriver/__init__.py:ro
+    ports:
+      - "8191:8191"
+      - "8192:8192"
+      - "9222:9222"
+      - "${RUBINOT_DATA_PORT:-18080}:8080"
+    environment:
+      PROMETHEUS_ENABLED: "true"
+      LOG_LEVEL: "debug"
+      CDP_BIND_HOST: "0.0.0.0"
+      CDP_PORT: "9222"
 
   api:
     build:
       context: .
       dockerfile: Dockerfile
+    network_mode: "service:flaresolverr"
     depends_on:
       - flaresolverr
     environment:
       PORT: "8080"
-      FLARESOLVERR_URL: "http://flaresolverr:8191/v1"
+      FLARESOLVERR_URL: "http://localhost:8191/v1"
       RUBINOT_BASE_URL: "https://rubinot.com.br"
       SCRAPE_MAX_TIMEOUT_MS: "120000"
       SCRAPE_MAX_CONCURRENCY: "8"
+      CDP_URL: "ws://localhost:9222"
       APP_VERSION: "v0.2.0"
       APP_COMMIT: "local"
-    ports:
-      - "${RUBINOT_DATA_PORT:-18080}:8080"
