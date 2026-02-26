@@ -30,6 +30,7 @@ const (
 type FetchOptions struct {
 	FlareSolverrURL string
 	MaxTimeoutMs    int
+	CDPURL          string
 }
 
 type Client struct {
@@ -37,11 +38,13 @@ type Client struct {
 	flareSolverrURL string
 	maxTimeoutMs    int
 	semaphore       chan struct{}
+	cdpURL          string
 }
 
 type flareSolverrRequest struct {
 	Cmd        string            `json:"cmd"`
-	URL        string            `json:"url"`
+	URL        string            `json:"url,omitempty"`
+	Session    string            `json:"session,omitempty"`
 	MaxTimeout int               `json:"maxTimeout,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
 }
@@ -66,13 +69,19 @@ type flareSolverrResponse struct {
 	} `json:"solution"`
 }
 
+const cdpSessionName = "rubinot-cdp"
+
 var (
 	scrapeSemaphoreOnce sync.Once
 	scrapeSemaphore     chan struct{}
 	sharedHTTPOnce      sync.Once
-	sharedHTTPClient   *resty.Client
-	htmlTagPattern     = regexp.MustCompile(`<[^>]+>`)
-	maintenancePattern = regexp.MustCompile(`(?is)server\s+is\s+under\s+maintenance,\s*please\s+visit\s+later\.?`)
+	sharedHTTPClient    *resty.Client
+	htmlTagPattern      = regexp.MustCompile(`<[^>]+>`)
+	maintenancePattern  = regexp.MustCompile(`(?is)server\s+is\s+under\s+maintenance,\s*please\s+visit\s+later\.?`)
+
+	globalCDPMu    sync.Mutex
+	globalCDP      *CDPClient
+	globalCDPReady bool
 )
 
 func sharedRestyClient() *resty.Client {
@@ -89,6 +98,7 @@ func NewClient(opts FetchOptions) *Client {
 		flareSolverrURL: normalized.FlareSolverrURL,
 		maxTimeoutMs:    normalized.MaxTimeoutMs,
 		semaphore:       sharedScrapeSemaphore(),
+		cdpURL:          normalized.CDPURL,
 	}
 }
 
@@ -185,15 +195,114 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 	return body, nil
 }
 
+func (c *Client) ensureCDP(ctx context.Context) (*CDPClient, error) {
+	if c.cdpURL == "" {
+		return nil, nil
+	}
+
+	globalCDPMu.Lock()
+	defer globalCDPMu.Unlock()
+
+	if globalCDPReady && globalCDP != nil && globalCDP.IsConnected() && globalCDP.baseURL == c.cdpURL {
+		return globalCDP, nil
+	}
+
+	if globalCDP != nil {
+		globalCDP.Close()
+		globalCDP = nil
+		globalCDPReady = false
+	}
+
+	if c.flareSolverrURL != "" {
+		type sessionReq struct {
+			Cmd     string `json:"cmd"`
+			Session string `json:"session,omitempty"`
+		}
+		_, _ = c.httpClient.R().
+			SetContext(ctx).
+			SetHeader("Content-Type", "application/json").
+			SetBody(sessionReq{Cmd: "sessions.create", Session: cdpSessionName}).
+			Post(c.flareSolverrURL)
+
+		var fsResp flareSolverrResponse
+		_, err := c.httpClient.R().
+			SetContext(ctx).
+			SetHeader("Content-Type", "application/json").
+			SetBody(flareSolverrRequest{
+				Cmd:        "request.get",
+				URL:        strings.TrimRight(os.Getenv("RUBINOT_BASE_URL"), "/") + "/",
+				MaxTimeout: c.maxTimeoutMs,
+				Session:    cdpSessionName,
+			}).
+			SetResult(&fsResp).
+			Post(c.flareSolverrURL)
+		if err != nil {
+			return nil, fmt.Errorf("navigate via FlareSolverr for CDP init: %w", err)
+		}
+	}
+
+	cdp := NewCDPClient(c.cdpURL)
+	if err := cdp.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("connect CDP: %w", err)
+	}
+
+	globalCDP = cdp
+	globalCDPReady = true
+	return cdp, nil
+}
+
 func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error {
 	ctx, span := tracer.Start(ctx, "scraper.Client.FetchJSON")
 	defer span.End()
 
-	body, err := c.Fetch(ctx, apiURL)
+	body, err := c.fetchJSONBody(ctx, apiURL)
 	if err != nil {
 		return err
 	}
 
+	return parseJSONBody(body, result)
+}
+
+func (c *Client) fetchJSONBody(ctx context.Context, apiURL string) (string, error) {
+	cdp, err := c.ensureCDP(ctx)
+	if err != nil {
+		return "", validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP init failed: %v", err), err)
+	}
+	if cdp == nil {
+		return "", validation.NewError(validation.ErrorFlareSolverrConnection, "CDP_URL not configured; JSON API requires CDP", nil)
+	}
+
+	return c.fetchViaCDP(ctx, cdp, apiURL)
+}
+
+func (c *Client) fetchViaCDP(ctx context.Context, cdp *CDPClient, apiURL string) (string, error) {
+	parsed, err := url.Parse(apiURL)
+	if err != nil {
+		return "", fmt.Errorf("parse API URL: %w", err)
+	}
+	fetchPath := parsed.Path
+	if parsed.RawQuery != "" {
+		fetchPath += "?" + parsed.RawQuery
+	}
+
+	started := time.Now()
+	body, err := cdp.Fetch(ctx, fetchPath)
+	CDPFetchDuration.Observe(time.Since(started).Seconds())
+
+	if err != nil {
+		CDPFetchRequests.WithLabelValues("error").Inc()
+		globalCDPMu.Lock()
+		globalCDPReady = false
+		globalCDPMu.Unlock()
+		return "", validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP fetch failed: %v", err), err)
+	}
+
+	CDPFetchRequests.WithLabelValues("ok").Inc()
+	UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), "200").Inc()
+	return body, nil
+}
+
+func parseJSONBody(body string, result any) error {
 	var errResp struct {
 		Error string `json:"error"`
 	}
@@ -284,11 +393,14 @@ func endpointFromURL(sourceURL string) string {
 }
 
 func normalizeFetchOptions(opts FetchOptions) FetchOptions {
-	if opts.FlareSolverrURL == "" {
+	if opts.FlareSolverrURL == "" && opts.CDPURL == "" {
 		opts.FlareSolverrURL = defaultFlareSolverrURL
 	}
 	if opts.MaxTimeoutMs <= 0 {
 		opts.MaxTimeoutMs = defaultMaxTimeoutMs
+	}
+	if opts.CDPURL == "" {
+		opts.CDPURL = os.Getenv("CDP_URL")
 	}
 	return opts
 }
@@ -375,4 +487,8 @@ func resetSharedScrapeSemaphoreForTests() {
 	scrapeSemaphoreOnce = sync.Once{}
 	sharedHTTPClient = nil
 	sharedHTTPOnce = sync.Once{}
+	globalCDPMu.Lock()
+	globalCDP = nil
+	globalCDPReady = false
+	globalCDPMu.Unlock()
 }

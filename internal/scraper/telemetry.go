@@ -167,6 +167,21 @@ var (
 		},
 		[]string{"endpoint"},
 	)
+
+	CDPFetchRequests = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "rubinotdata_cdp_fetch_requests_total",
+			Help: "Total CDP fetch requests by status",
+		},
+		[]string{"status"},
+	)
+	CDPFetchDuration = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "rubinotdata_cdp_fetch_duration_seconds",
+			Help:    "Duration of CDP page.evaluate(fetch()) calls",
+			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
+		},
+	)
 )
 
 func init() {
@@ -193,5 +208,7 @@ func init() {
 		CacheDuration,
 		CacheEntries,
 		CacheStaleServes,
+		CDPFetchRequests,
+		CDPFetchDuration,
 	)
 }
