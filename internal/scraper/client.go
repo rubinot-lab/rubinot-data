@@ -44,7 +44,6 @@ type Client struct {
 	maxTimeoutMs    int
 	semaphore       chan struct{}
 	cookieCache     *cookieCache
-	browserFetcher  func(ctx context.Context, apiURL, origin string) ([]byte, int, error)
 }
 
 type flareSolverrRequest struct {
@@ -142,7 +141,7 @@ func sharedRestyClient() *resty.Client {
 
 func NewClient(opts FetchOptions) *Client {
 	normalized := normalizeFetchOptions(opts)
-	client := &Client{
+	return &Client{
 		httpClient:      sharedRestyClient(),
 		directHTTP:      &http.Client{Timeout: defaultRequestTimeout},
 		flareSolverrURL: normalized.FlareSolverrURL,
@@ -150,8 +149,6 @@ func NewClient(opts FetchOptions) *Client {
 		semaphore:       sharedScrapeSemaphore(),
 		cookieCache:     sharedCookieCache,
 	}
-	client.browserFetcher = client.fetchJSONViaBrowser
-	return client
 }
 
 func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
@@ -287,28 +284,6 @@ func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error
 	return lastErr
 }
 
-func (c *Client) shouldFallbackToBrowser(statusCode int, body []byte) bool {
-	switch statusCode {
-	case http.StatusForbidden, http.StatusUnauthorized, http.StatusTooManyRequests,
-		http.StatusInternalServerError, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-		return true
-	}
-
-	if len(body) == 0 {
-		return false
-	}
-
-	lowerBody := strings.ToLower(string(body))
-	if strings.Contains(lowerBody, "cf-browser-verification") || strings.Contains(lowerBody, "just a moment") {
-		return true
-	}
-	if strings.Contains(lowerBody, "\"error\":\"access denied\"") || strings.Contains(lowerBody, "access denied") {
-		return true
-	}
-
-	return false
-}
-
 func (c *Client) fetchJSONAttempt(ctx context.Context, apiURL, origin string, result any) (bool, error) {
 	cookies, userAgent, err := c.getOrRefreshCookies(ctx, origin)
 	if err != nil {
@@ -349,14 +324,6 @@ func (c *Client) fetchJSONAttempt(ctx context.Context, apiURL, origin string, re
 	}
 
 	statusCode := resp.StatusCode
-	if c.shouldFallbackToBrowser(statusCode, body) && c.browserFetcher != nil {
-		browserBody, browserStatus, browserErr := c.browserFetcher(ctx, apiURL, origin)
-		if browserErr == nil {
-			body = browserBody
-			statusCode = browserStatus
-			UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), fmt.Sprintf("%d-browser", browserStatus)).Inc()
-		}
-	}
 
 	var errResp struct {
 		Error string `json:"error"`
@@ -394,8 +361,8 @@ func (c *Client) fetchJSONAttempt(ctx context.Context, apiURL, origin string, re
 	}
 
 	if err := json.Unmarshal(body, result); err != nil {
-		// Retry when upstream returned challenge/HTML instead of JSON.
-		if c.shouldFallbackToBrowser(http.StatusOK, body) {
+		lowerBody := strings.ToLower(string(body))
+		if strings.Contains(lowerBody, "just a moment") || strings.Contains(lowerBody, "cf-browser-verification") {
 			return true, validation.NewError(validation.ErrorUpstreamForbidden, "upstream returned challenge payload", err)
 		}
 		return false, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to decode JSON: %v", err), err)
@@ -670,5 +637,4 @@ func resetSharedScrapeSemaphoreForTests() {
 	sharedHTTPClient = nil
 	sharedHTTPOnce = sync.Once{}
 	sharedCookieCache = newCookieCache()
-	resetBrowserRuntimeForTests()
 }
