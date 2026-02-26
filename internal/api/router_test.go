@@ -2,14 +2,17 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/giovannirco/rubinot-data/internal/validation"
+	"github.com/gorilla/websocket"
 )
 
 const eventsFixtureHTML = `
@@ -28,10 +31,13 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 	api := newHappyAPIUpstream(t)
 	defer api.Close()
 
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+
 	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
 	defer fs.Close()
 
-	router := newIntegrationTestRouter(t, fs.URL, api.URL)
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
 
 	testCases := []struct {
 		name       string
@@ -84,10 +90,12 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 func TestRouterHighscoresRedirects(t *testing.T) {
 	api := newHappyAPIUpstream(t)
 	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
 	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
 	defer fs.Close()
 
-	router := newIntegrationTestRouter(t, fs.URL, api.URL)
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
 
 	testCases := []struct {
 		path     string
@@ -111,10 +119,12 @@ func TestRouterHighscoresRedirects(t *testing.T) {
 func TestRouterValidationErrors(t *testing.T) {
 	api := newHappyAPIUpstream(t)
 	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
 	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
 	defer fs.Close()
 
-	router := newIntegrationTestRouter(t, fs.URL, api.URL)
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
 
 	testCases := []struct {
 		path  string
@@ -150,10 +160,12 @@ func TestRouterMaintenancePropagation(t *testing.T) {
 		writeJSON(w, map[string]any{"error": "unsupported"})
 	})
 	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
 	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
 	defer fs.Close()
 
-	router := newIntegrationTestRouter(t, fs.URL, api.URL)
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
 	rec := performRequest(router, http.MethodGet, "/v1/highscores/Belaria/experience/all/1")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)
@@ -169,17 +181,18 @@ func TestRouterNotFoundPropagation(t *testing.T) {
 			return
 		}
 		if r.URL.Path == "/api/characters/search" {
-			w.WriteHeader(http.StatusNotFound)
 			writeJSON(w, map[string]any{"error": "Character not found"})
 			return
 		}
 		writeJSON(w, map[string]any{"error": "unsupported"})
 	})
 	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
 	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
 	defer fs.Close()
 
-	router := newIntegrationTestRouter(t, fs.URL, api.URL)
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
 	rec := performRequest(router, http.MethodGet, "/v1/character/Unknown%20Player")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
@@ -188,12 +201,13 @@ func TestRouterNotFoundPropagation(t *testing.T) {
 	assertEnvelope(t, body, http.StatusNotFound, validation.ErrorEntityNotFound)
 }
 
-func newIntegrationTestRouter(t *testing.T, flaresolverrURL, baseURL string) http.Handler {
+func newIntegrationTestRouter(t *testing.T, flaresolverrURL, baseURL, cdpURL string) http.Handler {
 	t.Helper()
 	t.Setenv("FLARESOLVERR_URL", flaresolverrURL)
 	t.Setenv("RUBINOT_BASE_URL", baseURL)
 	t.Setenv("SCRAPE_MAX_TIMEOUT_MS", "120000")
 	t.Setenv("SCRAPE_MAX_CONCURRENCY", "8")
+	t.Setenv("CDP_URL", cdpURL)
 
 	router, err := NewRouter()
 	if err != nil {
@@ -210,28 +224,36 @@ func newFakeFlareSolverrForRouter(t *testing.T, eventsHTML string) *httptest.Ser
 		}
 
 		var payload struct {
-			URL string `json:"url"`
+			Cmd     string `json:"cmd"`
+			URL     string `json:"url"`
+			Session string `json:"session"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("failed to decode flaresolverr request: %v", err)
+		}
+
+		if payload.Cmd == "sessions.create" {
+			writeJSON(w, map[string]any{"status": "ok", "message": "Session created successfully.", "session": payload.Session})
+			return
+		}
+
+		if payload.Session != "" && !strings.Contains(payload.URL, "/events") {
+			writeJSON(w, map[string]any{
+				"status":  "ok",
+				"message": "Challenge not detected!",
+				"solution": map[string]any{
+					"response": "<html><body>ok</body></html>",
+					"status":   http.StatusOK,
+					"url":      payload.URL,
+				},
+			})
+			return
 		}
 
 		body := "<html><body>ok</body></html>"
 		solutionStatus := http.StatusOK
 		if strings.Contains(payload.URL, "/events") {
 			body = eventsHTML
-		} else {
-			proxyResp, err := http.Get(payload.URL)
-			if err != nil {
-				t.Fatalf("failed to proxy to target: %v", err)
-			}
-			defer proxyResp.Body.Close()
-			raw, err := io.ReadAll(proxyResp.Body)
-			if err != nil {
-				t.Fatalf("failed to read proxy response: %v", err)
-			}
-			body = string(raw)
-			solutionStatus = proxyResp.StatusCode
 		}
 
 		resp := map[string]any{
@@ -342,6 +364,79 @@ func assertEnvelope(t *testing.T, body map[string]any, expectedHTTPCode int, exp
 	if got := toInt(t, status["error"]); got != expectedErrorCode {
 		t.Fatalf("expected information.status.error=%d, got %d", expectedErrorCode, got)
 	}
+}
+
+var routerCDPPathRe = regexp.MustCompile(`fetch\('([^']+)'\)`)
+
+var routerWSUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+func newMockCDPForRouter(t *testing.T, apiUpstream *httptest.Server) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
+		targets := []map[string]string{{
+			"id":                   "ROUTER_PAGE_1",
+			"type":                 "page",
+			"url":                  "https://rubinot.com.br/news",
+			"webSocketDebuggerUrl": fmt.Sprintf("ws://%s/devtools/page/ROUTER_PAGE_1", r.Host),
+		}}
+		writeJSON(w, targets)
+	})
+
+	mux.HandleFunc("/devtools/page/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := routerWSUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("websocket upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var req struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+				Params struct {
+					Expression string `json:"expression"`
+				} `json:"params"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				continue
+			}
+
+			var value string
+			if req.Method == "Runtime.evaluate" {
+				matches := routerCDPPathRe.FindStringSubmatch(req.Params.Expression)
+				if len(matches) > 1 {
+					resp, err := http.Get(apiUpstream.URL + matches[1])
+					if err != nil {
+						value = fmt.Sprintf(`{"error":"%s"}`, err.Error())
+					} else {
+						defer resp.Body.Close()
+						raw, _ := io.ReadAll(resp.Body)
+						value = string(raw)
+					}
+				}
+			}
+
+			conn.WriteJSON(map[string]any{
+				"id": req.ID,
+				"result": map[string]any{
+					"result": map[string]any{
+						"type":  "string",
+						"value": value,
+					},
+				},
+			})
+		}
+	})
+
+	return httptest.NewServer(mux)
 }
 
 func toInt(t *testing.T, value any) int {

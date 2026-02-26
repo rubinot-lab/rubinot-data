@@ -29,10 +29,10 @@ func TestFetchKillstatisticsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	result, _, err := FetchKillstatistics(context.Background(), baseURLOf(api), "Belaria", 15, testFetchOptions(fs.URL))
+	result, _, err := FetchKillstatistics(context.Background(), baseURLOf(api), "Belaria", 15, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

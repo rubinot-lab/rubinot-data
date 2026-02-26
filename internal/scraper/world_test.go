@@ -33,10 +33,10 @@ func TestFetchWorldFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	result, sourceURL, err := FetchWorld(context.Background(), baseURLOf(api), "Belaria", testFetchOptions(fs.URL))
+	result, sourceURL, err := FetchWorld(context.Background(), baseURLOf(api), "Belaria", testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

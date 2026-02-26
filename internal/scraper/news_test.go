@@ -34,10 +34,10 @@ func TestFetchNewsByIDFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	entry, _, err := FetchNewsByID(context.Background(), baseURLOf(api), 3, testFetchOptions(fs.URL))
+	entry, _, err := FetchNewsByID(context.Background(), baseURLOf(api), 3, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -45,7 +45,7 @@ func TestFetchNewsByIDFromAPI(t *testing.T) {
 		t.Fatalf("unexpected news entry: %+v", entry)
 	}
 
-	ticker, _, err := FetchNewsByID(context.Background(), baseURLOf(api), 146, testFetchOptions(fs.URL))
+	ticker, _, err := FetchNewsByID(context.Background(), baseURLOf(api), 146, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -81,10 +81,10 @@ func TestFetchNewsListsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	archive, _, err := FetchNewsArchive(context.Background(), baseURLOf(api), 365, testFetchOptions(fs.URL))
+	archive, _, err := FetchNewsArchive(context.Background(), baseURLOf(api), 365, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("archive error: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestFetchNewsListsFromAPI(t *testing.T) {
 		t.Fatal("expected archive entries")
 	}
 
-	latest, _, err := FetchNewsLatest(context.Background(), baseURLOf(api), testFetchOptions(fs.URL))
+	latest, _, err := FetchNewsLatest(context.Background(), baseURLOf(api), testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("latest error: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestFetchNewsListsFromAPI(t *testing.T) {
 		t.Fatalf("unexpected latest entries: %+v", latest.Entries)
 	}
 
-	ticker, _, err := FetchNewsTicker(context.Background(), baseURLOf(api), testFetchOptions(fs.URL))
+	ticker, _, err := FetchNewsTicker(context.Background(), baseURLOf(api), testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("ticker error: %v", err)
 	}

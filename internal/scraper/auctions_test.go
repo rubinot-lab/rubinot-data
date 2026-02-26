@@ -65,10 +65,10 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	current, _, err := FetchCurrentAuctions(context.Background(), baseURLOf(api), 1, testFetchOptions(fs.URL))
+	current, _, err := FetchCurrentAuctions(context.Background(), baseURLOf(api), 1, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("current auctions error: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 		t.Fatalf("unexpected current entries: %+v", current.Entries)
 	}
 
-	history, _, err := FetchAuctionHistory(context.Background(), baseURLOf(api), 1, testFetchOptions(fs.URL))
+	history, _, err := FetchAuctionHistory(context.Background(), baseURLOf(api), 1, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("history auctions error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 		t.Fatalf("unexpected history payload: %+v", history)
 	}
 
-	detail, _, err := FetchAuctionDetail(context.Background(), baseURLOf(api), 193226, testFetchOptions(fs.URL))
+	detail, _, err := FetchAuctionDetail(context.Background(), baseURLOf(api), 193226, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("auction detail error: %v", err)
 	}

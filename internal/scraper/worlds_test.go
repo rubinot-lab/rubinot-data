@@ -22,10 +22,10 @@ func TestFetchWorldsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	result, sourceURL, err := FetchWorlds(context.Background(), baseURLOf(api), testFetchOptions(fs.URL))
+	result, sourceURL, err := FetchWorlds(context.Background(), baseURLOf(api), testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

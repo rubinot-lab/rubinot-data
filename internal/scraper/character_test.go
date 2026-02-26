@@ -59,10 +59,10 @@ func TestFetchCharacterFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	result, _, err := FetchCharacter(context.Background(), baseURLOf(api), "Terah", testFetchOptions(fs.URL))
+	result, _, err := FetchCharacter(context.Background(), baseURLOf(api), "Terah", testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

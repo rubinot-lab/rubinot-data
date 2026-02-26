@@ -33,8 +33,8 @@ func TestFetchDeathsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
 	pvpOnly := true
 	result, _, err := FetchDeaths(
@@ -43,7 +43,7 @@ func TestFetchDeathsFromAPI(t *testing.T) {
 		"Belaria",
 		15,
 		DeathsFilters{MinLevel: 100, PvPOnly: &pvpOnly, Page: 2},
-		testFetchOptions(fs.URL),
+		testFetchOptionsWithCDP("", cdpSrv.URL),
 	)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

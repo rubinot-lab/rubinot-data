@@ -30,14 +30,14 @@ func TestFetchTransfersFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
 	result, _, err := FetchTransfers(
 		context.Background(),
 		baseURLOf(api),
 		TransfersFilters{WorldID: 15, WorldName: "Belaria", MinLevel: 500, Page: 3},
-		testFetchOptions(fs.URL),
+		testFetchOptionsWithCDP("", cdpSrv.URL),
 	)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

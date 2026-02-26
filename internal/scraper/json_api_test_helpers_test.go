@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 type fsRequestPayload struct {
@@ -70,6 +73,105 @@ func newFlareSolverrProxyServer(t *testing.T, targetServer *httptest.Server) *ht
 		}
 		return string(raw)
 	})
+}
+
+var cdpFetchPathRe = regexp.MustCompile(`fetch\('([^']+)'\)`)
+
+var wsUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+func resetGlobalCDPForTests() {
+	globalCDPMu.Lock()
+	if globalCDP != nil {
+		globalCDP.Close()
+	}
+	globalCDP = nil
+	globalCDPReady = false
+	globalCDPMu.Unlock()
+}
+
+func newMockCDPServer(t *testing.T, contentForPath func(string) string) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
+		host := r.Host
+		targets := []map[string]string{{
+			"id":                   "MOCK_PAGE_1",
+			"type":                 "page",
+			"url":                  "https://rubinot.com.br/news",
+			"webSocketDebuggerUrl": fmt.Sprintf("ws://%s/devtools/page/MOCK_PAGE_1", host),
+		}}
+		writeJSON(w, targets)
+	})
+
+	mux.HandleFunc("/devtools/page/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("websocket upgrade: %v", err)
+		}
+		defer conn.Close()
+
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var req struct {
+				ID     int64 `json:"id"`
+				Method string `json:"method"`
+				Params struct {
+					Expression string `json:"expression"`
+				} `json:"params"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				continue
+			}
+
+			var value string
+			if req.Method == "Runtime.evaluate" {
+				matches := cdpFetchPathRe.FindStringSubmatch(req.Params.Expression)
+				if len(matches) > 1 && contentForPath != nil {
+					value = contentForPath(matches[1])
+				}
+			}
+
+			resp := map[string]any{
+				"id": req.ID,
+				"result": map[string]any{
+					"result": map[string]any{
+						"type":  "string",
+						"value": value,
+					},
+				},
+			}
+			conn.WriteJSON(resp)
+		}
+	})
+
+	return httptest.NewServer(mux)
+}
+
+func newMockCDPProxyServer(t *testing.T, targetServer *httptest.Server) *httptest.Server {
+	t.Helper()
+	resetGlobalCDPForTests()
+
+	return newMockCDPServer(t, func(apiPath string) string {
+		resp, err := http.Get(targetServer.URL + apiPath)
+		if err != nil {
+			t.Fatalf("mock CDP proxy failed: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("mock CDP proxy read: %v", err)
+		}
+		return string(raw)
+	})
+}
+
+func testFetchOptionsWithCDP(fsURL, cdpURL string) FetchOptions {
+	return FetchOptions{FlareSolverrURL: fsURL, MaxTimeoutMs: 120000, CDPURL: cdpURL}
 }
 
 func mustJSON(t *testing.T, value any) string {

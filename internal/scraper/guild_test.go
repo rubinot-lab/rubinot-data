@@ -40,10 +40,10 @@ func TestFetchGuildFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
-	result, _, err := FetchGuild(context.Background(), baseURLOf(api), "Panq Alliance", testFetchOptions(fs.URL))
+	result, _, err := FetchGuild(context.Background(), baseURLOf(api), "Panq Alliance", testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}

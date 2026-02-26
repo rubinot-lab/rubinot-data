@@ -26,8 +26,8 @@ func TestFetchHighscoresFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrProxyServer(t, api)
-	defer fs.Close()
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
 
 	result, _, err := FetchHighscores(
 		context.Background(),
@@ -37,7 +37,7 @@ func TestFetchHighscoresFromAPI(t *testing.T) {
 		validation.HighscoreCategory{ID: 1, Name: "Experience", Slug: "experience"},
 		validation.HighscoreVocation{Name: "(all)", ProfessionID: 0},
 		1,
-		testFetchOptions(fs.URL),
+		testFetchOptionsWithCDP("", cdpSrv.URL),
 	)
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
