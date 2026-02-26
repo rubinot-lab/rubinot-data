@@ -214,30 +214,8 @@ func (c *Client) ensureCDP(ctx context.Context) (*CDPClient, error) {
 	}
 
 	if c.flareSolverrURL != "" {
-		type sessionReq struct {
-			Cmd     string `json:"cmd"`
-			Session string `json:"session,omitempty"`
-		}
-		_, _ = c.httpClient.R().
-			SetContext(ctx).
-			SetHeader("Content-Type", "application/json").
-			SetBody(sessionReq{Cmd: "sessions.create", Session: cdpSessionName}).
-			Post(c.flareSolverrURL)
-
-		var fsResp flareSolverrResponse
-		_, err := c.httpClient.R().
-			SetContext(ctx).
-			SetHeader("Content-Type", "application/json").
-			SetBody(flareSolverrRequest{
-				Cmd:        "request.get",
-				URL:        strings.TrimRight(os.Getenv("RUBINOT_BASE_URL"), "/") + "/",
-				MaxTimeout: c.maxTimeoutMs,
-				Session:    cdpSessionName,
-			}).
-			SetResult(&fsResp).
-			Post(c.flareSolverrURL)
-		if err != nil {
-			return nil, fmt.Errorf("navigate via FlareSolverr for CDP init: %w", err)
+		if err := c.initFlareSolverrSession(ctx); err != nil {
+			return nil, err
 		}
 	}
 
@@ -249,6 +227,51 @@ func (c *Client) ensureCDP(ctx context.Context) (*CDPClient, error) {
 	globalCDP = cdp
 	globalCDPReady = true
 	return cdp, nil
+}
+
+func (c *Client) initFlareSolverrSession(ctx context.Context) error {
+	type sessionReq struct {
+		Cmd     string `json:"cmd"`
+		Session string `json:"session,omitempty"`
+	}
+
+	const maxRetries = 10
+	var lastErr error
+	for attempt := range maxRetries {
+		_, err := c.httpClient.R().
+			SetContext(ctx).
+			SetHeader("Content-Type", "application/json").
+			SetBody(sessionReq{Cmd: "sessions.create", Session: cdpSessionName}).
+			Post(c.flareSolverrURL)
+		if err != nil {
+			lastErr = err
+			backoff := time.Duration(attempt+1) * 3 * time.Second
+			time.Sleep(backoff)
+			continue
+		}
+
+		var fsResp flareSolverrResponse
+		_, err = c.httpClient.R().
+			SetContext(ctx).
+			SetHeader("Content-Type", "application/json").
+			SetBody(flareSolverrRequest{
+				Cmd:        "request.get",
+				URL:        strings.TrimRight(os.Getenv("RUBINOT_BASE_URL"), "/") + "/",
+				MaxTimeout: c.maxTimeoutMs,
+				Session:    cdpSessionName,
+			}).
+			SetResult(&fsResp).
+			Post(c.flareSolverrURL)
+		if err != nil {
+			lastErr = err
+			backoff := time.Duration(attempt+1) * 3 * time.Second
+			time.Sleep(backoff)
+			continue
+		}
+
+		return nil
+	}
+	return fmt.Errorf("FlareSolverr init failed after %d retries: %w", maxRetries, lastErr)
 }
 
 func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error {

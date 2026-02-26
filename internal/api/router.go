@@ -786,6 +786,7 @@ func scrapeFetchOptions() scraper.FetchOptions {
 	return scraper.FetchOptions{
 		FlareSolverrURL: getEnv("FLARESOLVERR_URL", ""),
 		MaxTimeoutMs:    getEnvInt("SCRAPE_MAX_TIMEOUT_MS", defaultScrapeTimeoutMS),
+		CDPURL:          getEnv("CDP_URL", ""),
 	}
 }
 

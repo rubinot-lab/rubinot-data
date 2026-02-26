@@ -57,8 +57,15 @@ func NewCDPClient(baseURL string) *CDPClient {
 	return &CDPClient{baseURL: strings.TrimRight(baseURL, "/")}
 }
 
+func (c *CDPClient) httpBaseURL() string {
+	u := c.baseURL
+	u = strings.Replace(u, "ws://", "http://", 1)
+	u = strings.Replace(u, "wss://", "https://", 1)
+	return u
+}
+
 func (c *CDPClient) discoverPageTarget(ctx context.Context) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/json/list", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.httpBaseURL()+"/json/list", nil)
 	if err != nil {
 		return "", fmt.Errorf("build CDP target request: %w", err)
 	}
