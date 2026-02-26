@@ -3,6 +3,7 @@ package scraper
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,19 +11,14 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 type fsRequestPayload struct {
 	URL string `json:"url"`
 }
 
-func newFlareSolverrJSONServer(t *testing.T, htmlForURL func(string) string) *httptest.Server {
+func newFlareSolverrJSONServer(t *testing.T, contentForURL func(string) string) *httptest.Server {
 	t.Helper()
-
-	if htmlForURL == nil {
-		htmlForURL = func(string) string { return "<html><body>ok</body></html>" }
-	}
 
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -35,27 +31,20 @@ func newFlareSolverrJSONServer(t *testing.T, htmlForURL func(string) string) *ht
 		}
 
 		targetURL := strings.TrimSpace(payload.URL)
-		html := htmlForURL(targetURL)
-		if html == "" {
-			html = "<html><body>ok</body></html>"
+		body := "<html><body>ok</body></html>"
+		if contentForURL != nil {
+			if custom := contentForURL(targetURL); custom != "" {
+				body = custom
+			}
 		}
 
 		resp := map[string]any{
 			"status":  "ok",
 			"message": "",
 			"solution": map[string]any{
-				"response": html,
+				"response": body,
 				"status":   http.StatusOK,
 				"url":      targetURL,
-				"cookies": []map[string]any{
-					{
-						"name":    "cf_clearance",
-						"value":   "test-cookie",
-						"domain":  "",
-						"path":    "/",
-						"expires": time.Now().Add(1 * time.Hour).Unix(),
-					},
-				},
 			},
 		}
 
@@ -64,6 +53,23 @@ func newFlareSolverrJSONServer(t *testing.T, htmlForURL func(string) string) *ht
 			t.Fatalf("failed to encode flaresolverr response: %v", err)
 		}
 	}))
+}
+
+func newFlareSolverrProxyServer(t *testing.T, targetServer *httptest.Server) *httptest.Server {
+	t.Helper()
+
+	return newFlareSolverrJSONServer(t, func(targetURL string) string {
+		proxyResp, err := http.Get(targetURL)
+		if err != nil {
+			t.Fatalf("failed to proxy to target: %v", err)
+		}
+		defer proxyResp.Body.Close()
+		raw, err := io.ReadAll(proxyResp.Body)
+		if err != nil {
+			t.Fatalf("failed to read proxy response: %v", err)
+		}
+		return string(raw)
+	})
 }
 
 func mustJSON(t *testing.T, value any) string {
@@ -105,13 +111,6 @@ func failUnexpectedRequest(t *testing.T, r *http.Request) {
 
 func baseURLOf(server *httptest.Server) string {
 	return strings.TrimSuffix(server.URL, "/")
-}
-
-func assertHasCookieHeader(t *testing.T, r *http.Request) {
-	t.Helper()
-	if strings.TrimSpace(r.Header.Get("Cookie")) == "" {
-		t.Fatalf("expected cookie header for %s", r.URL.String())
-	}
 }
 
 func formatErrBody(body string) string {

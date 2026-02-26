@@ -30,7 +30,7 @@ func TestFetchBanishmentsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	result, _, err := FetchBanishments(context.Background(), baseURLOf(api), "Belaria", 15, 2, testFetchOptions(fs.URL))

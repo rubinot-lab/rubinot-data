@@ -33,7 +33,7 @@ func TestFetchDeathsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	pvpOnly := true

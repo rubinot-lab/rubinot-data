@@ -10,7 +10,6 @@ import (
 func TestFetchWorldFromAPI(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertPath(t, r, "/api/worlds/Belaria")
-		assertHasCookieHeader(t, r)
 		writeJSON(w, map[string]any{
 			"world": map[string]any{
 				"id":           15,
@@ -34,7 +33,7 @@ func TestFetchWorldFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	result, sourceURL, err := FetchWorld(context.Background(), baseURLOf(api), "Belaria", testFetchOptions(fs.URL))

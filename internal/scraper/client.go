@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,9 +25,6 @@ const (
 	defaultMaxConcurrency   = 8
 	defaultRequestTimeout   = 140 * time.Second
 	defaultBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-	cookieMinTTL            = 30 * time.Second
-	cookieFallbackTTL       = 10 * time.Minute
-	cookieSafetyMargin      = 1 * time.Minute
 )
 
 type FetchOptions struct {
@@ -39,11 +34,9 @@ type FetchOptions struct {
 
 type Client struct {
 	httpClient      *resty.Client
-	directHTTP      *http.Client
 	flareSolverrURL string
 	maxTimeoutMs    int
 	semaphore       chan struct{}
-	cookieCache     *cookieCache
 }
 
 type flareSolverrRequest struct {
@@ -73,63 +66,13 @@ type flareSolverrResponse struct {
 	} `json:"solution"`
 }
 
-type fetchResult struct {
-	HTML      string
-	URL       string
-	Cookies   []*http.Cookie
-	UserAgent string
-}
-
-type cachedCookies struct {
-	cookies   []*http.Cookie
-	userAgent string
-	expiresAt time.Time
-}
-
-type cookieCache struct {
-	mu       sync.RWMutex
-	byOrigin map[string]cachedCookies
-}
-
-func newCookieCache() *cookieCache {
-	return &cookieCache{byOrigin: make(map[string]cachedCookies)}
-}
-
-func (cc *cookieCache) get(origin string) ([]*http.Cookie, string, bool) {
-	cc.mu.RLock()
-	defer cc.mu.RUnlock()
-
-	entry, ok := cc.byOrigin[origin]
-	if !ok || len(entry.cookies) == 0 || time.Now().After(entry.expiresAt) {
-		return nil, "", false
-	}
-	return cloneCookies(entry.cookies), entry.userAgent, true
-}
-
-func (cc *cookieCache) set(origin string, cookies []*http.Cookie, userAgent string, expiresAt time.Time) {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.byOrigin[origin] = cachedCookies{
-		cookies:   cloneCookies(cookies),
-		userAgent: strings.TrimSpace(userAgent),
-		expiresAt: expiresAt,
-	}
-}
-
-func (cc *cookieCache) reset() {
-	cc.mu.Lock()
-	defer cc.mu.Unlock()
-	cc.byOrigin = make(map[string]cachedCookies)
-}
-
 var (
 	scrapeSemaphoreOnce sync.Once
 	scrapeSemaphore     chan struct{}
 	sharedHTTPOnce      sync.Once
-	sharedHTTPClient    *resty.Client
-	htmlTagPattern      = regexp.MustCompile(`<[^>]+>`)
-	maintenancePattern  = regexp.MustCompile(`(?is)server\s+is\s+under\s+maintenance,\s*please\s+visit\s+later\.?`)
-	sharedCookieCache   = newCookieCache()
+	sharedHTTPClient   *resty.Client
+	htmlTagPattern     = regexp.MustCompile(`<[^>]+>`)
+	maintenancePattern = regexp.MustCompile(`(?is)server\s+is\s+under\s+maintenance,\s*please\s+visit\s+later\.?`)
 )
 
 func sharedRestyClient() *resty.Client {
@@ -143,29 +86,19 @@ func NewClient(opts FetchOptions) *Client {
 	normalized := normalizeFetchOptions(opts)
 	return &Client{
 		httpClient:      sharedRestyClient(),
-		directHTTP:      &http.Client{Timeout: defaultRequestTimeout},
 		flareSolverrURL: normalized.FlareSolverrURL,
 		maxTimeoutMs:    normalized.MaxTimeoutMs,
 		semaphore:       sharedScrapeSemaphore(),
-		cookieCache:     sharedCookieCache,
 	}
 }
 
 func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
-	result, err := c.fetch(ctx, sourceURL)
-	if err != nil {
-		return "", err
-	}
-	return result.HTML, nil
-}
-
-func (c *Client) fetch(ctx context.Context, sourceURL string) (*fetchResult, error) {
-	ctx, span := tracer.Start(ctx, "scraper.Client.fetch")
+	ctx, span := tracer.Start(ctx, "scraper.Client.Fetch")
 	defer span.End()
 
 	if err := acquireSemaphore(ctx, c.semaphore); err != nil {
 		FlareSolverrRequests.WithLabelValues("timeout").Inc()
-		return nil, validation.NewError(validation.ErrorFlareSolverrTimeout, fmt.Sprintf("flaresolverr timeout: %v", err), err)
+		return "", validation.NewError(validation.ErrorFlareSolverrTimeout, fmt.Sprintf("flaresolverr timeout: %v", err), err)
 	}
 	defer releaseSemaphore(c.semaphore)
 
@@ -196,11 +129,11 @@ func (c *Client) fetch(ctx context.Context, sourceURL string) (*fetchResult, err
 		} else {
 			FlareSolverrRequests.WithLabelValues("error").Inc()
 		}
-		return nil, mapped
+		return "", mapped
 	}
 	if res.StatusCode() != http.StatusOK {
 		FlareSolverrRequests.WithLabelValues("error").Inc()
-		return nil, validation.NewError(validation.ErrorFlareSolverrNon200, fmt.Sprintf("flaresolverr returned non-200: %d", res.StatusCode()), nil)
+		return "", validation.NewError(validation.ErrorFlareSolverrNon200, fmt.Sprintf("flaresolverr returned non-200: %d", res.StatusCode()), nil)
 	}
 	if strings.ToLower(out.Status) != "ok" {
 		code := validation.ErrorUpstreamUnknown
@@ -210,274 +143,80 @@ func (c *Client) fetch(ctx context.Context, sourceURL string) (*fetchResult, err
 		} else {
 			FlareSolverrRequests.WithLabelValues("error").Inc()
 		}
-		return nil, validation.NewError(code, fmt.Sprintf("flaresolverr error: %s", out.Message), nil)
+		return "", validation.NewError(code, fmt.Sprintf("flaresolverr error: %s", out.Message), nil)
 	}
 
 	UpstreamStatus.WithLabelValues(endpointFromURL(sourceURL), strconv.Itoa(out.Solution.Status)).Inc()
 
 	switch out.Solution.Status {
-	case http.StatusOK:
+	case http.StatusOK, http.StatusNotFound:
 	case http.StatusServiceUnavailable:
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		UpstreamMaintenance.Inc()
-		return nil, validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
 	case http.StatusForbidden:
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
-		return nil, validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("target returned forbidden status via flaresolverr: %d", out.Solution.Status), nil)
+		return "", validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("target returned forbidden status via flaresolverr: %d", out.Solution.Status), nil)
 	default:
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
-		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("target returned non-200 via flaresolverr: %d", out.Solution.Status), nil)
+		return "", validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("target returned non-200 via flaresolverr: %d", out.Solution.Status), nil)
 	}
 
-	html := out.Solution.Response
+	body := out.Solution.Response
 	if isMaintenanceURL(out.Solution.URL) {
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		UpstreamMaintenance.Inc()
-		return nil, validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
 	}
 
-	lowerHTML := strings.ToLower(html)
-	if strings.Contains(lowerHTML, "just a moment") || strings.Contains(lowerHTML, "cf-browser-verification") {
+	lowerBody := strings.ToLower(body)
+	if strings.Contains(lowerBody, "just a moment") || strings.Contains(lowerBody, "cf-browser-verification") {
 		FlareSolverrRequests.WithLabelValues("cf_challenge").Inc()
 		CloudflareChallenges.Inc()
-		return nil, validation.NewError(validation.ErrorCloudflareChallengePresent, "cloudflare challenge page still present after flaresolverr", nil)
+		return "", validation.NewError(validation.ErrorCloudflareChallengePresent, "cloudflare challenge page still present after flaresolverr", nil)
 	}
-	if containsMaintenanceMessage(html) {
+	if containsMaintenanceMessage(body) {
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		UpstreamMaintenance.Inc()
-		return nil, validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
 	}
 
 	FlareSolverrRequests.WithLabelValues("ok").Inc()
-	return &fetchResult{
-		HTML:      html,
-		URL:       out.Solution.URL,
-		Cookies:   toHTTPCookies(out.Solution.Cookies),
-		UserAgent: strings.TrimSpace(out.Solution.UserAgent),
-	}, nil
+	return body, nil
 }
 
 func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error {
 	ctx, span := tracer.Start(ctx, "scraper.Client.FetchJSON")
 	defer span.End()
 
-	origin, err := originFromURL(apiURL)
+	body, err := c.Fetch(ctx, apiURL)
 	if err != nil {
-		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("invalid API URL: %v", err), err)
+		return err
 	}
-
-	var lastErr error
-	for attempt := 0; attempt < 3; attempt++ {
-		shouldRetry, attemptErr := c.fetchJSONAttempt(ctx, apiURL, origin, result)
-		if attemptErr == nil {
-			return nil
-		}
-		lastErr = attemptErr
-		if !shouldRetry || attempt == 2 {
-			return attemptErr
-		}
-
-		c.cookieCache.reset()
-		time.Sleep(time.Duration(attempt+1) * 300 * time.Millisecond)
-	}
-
-	return lastErr
-}
-
-func (c *Client) fetchJSONAttempt(ctx context.Context, apiURL, origin string, result any) (bool, error) {
-	cookies, userAgent, err := c.getOrRefreshCookies(ctx, origin)
-	if err != nil {
-		return false, err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
-	if err != nil {
-		return false, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to create request: %v", err), err)
-	}
-	req.Header.Set("Origin", origin)
-	req.Header.Set("Referer", origin+"/")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9,pt-BR;q=0.8")
-	if strings.TrimSpace(userAgent) == "" {
-		userAgent = defaultBrowserUserAgent
-	}
-	req.Header.Set("User-Agent", userAgent)
-	for _, cookie := range cookies {
-		req.AddCookie(cookie)
-	}
-
-	resp, err := c.directHTTP.Do(req)
-	if err != nil {
-		return true, mapClientError(err)
-	}
-	defer resp.Body.Close()
-
-	UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), strconv.Itoa(resp.StatusCode)).Inc()
-	if resp.StatusCode == http.StatusServiceUnavailable {
-		UpstreamMaintenance.Inc()
-		return false, validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return true, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to read response body: %v", err), err)
-	}
-
-	statusCode := resp.StatusCode
 
 	var errResp struct {
 		Error string `json:"error"`
 	}
-	if json.Unmarshal(body, &errResp) == nil && strings.TrimSpace(errResp.Error) != "" {
+	if json.Unmarshal([]byte(body), &errResp) == nil && strings.TrimSpace(errResp.Error) != "" {
 		lower := strings.ToLower(errResp.Error)
 		switch {
 		case strings.Contains(lower, "maintenance"):
 			UpstreamMaintenance.Inc()
-			return false, validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+			return validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+		case strings.Contains(lower, "not found"):
+			return validation.NewError(validation.ErrorEntityNotFound, errResp.Error, nil)
 		case strings.Contains(lower, "access denied"):
-			return true, validation.NewError(validation.ErrorUpstreamForbidden, "API access denied", nil)
+			return validation.NewError(validation.ErrorUpstreamForbidden, "API access denied", nil)
 		default:
-			if statusCode == http.StatusNotFound {
-				return false, validation.NewError(validation.ErrorEntityNotFound, errResp.Error, nil)
-			}
-			if statusCode >= http.StatusInternalServerError {
-				return true, validation.NewError(validation.ErrorUpstreamUnknown, errResp.Error, nil)
-			}
-			return false, validation.NewError(validation.ErrorUpstreamUnknown, errResp.Error, nil)
+			return validation.NewError(validation.ErrorUpstreamUnknown, errResp.Error, nil)
 		}
 	}
 
-	switch statusCode {
-	case http.StatusOK:
-	case http.StatusForbidden, http.StatusUnauthorized:
-		return true, validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("API returned %d", statusCode), nil)
-	case http.StatusNotFound:
-		return false, validation.NewError(validation.ErrorEntityNotFound, "entity not found", nil)
-	default:
-		if statusCode >= http.StatusInternalServerError {
-			return true, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("API returned %d", statusCode), nil)
-		}
-		return false, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("API returned %d", statusCode), nil)
+	if err := json.Unmarshal([]byte(body), result); err != nil {
+		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to decode JSON: %v", err), err)
 	}
 
-	if err := json.Unmarshal(body, result); err != nil {
-		lowerBody := strings.ToLower(string(body))
-		if strings.Contains(lowerBody, "just a moment") || strings.Contains(lowerBody, "cf-browser-verification") {
-			return true, validation.NewError(validation.ErrorUpstreamForbidden, "upstream returned challenge payload", err)
-		}
-		return false, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to decode JSON: %v", err), err)
-	}
-
-	return false, nil
-}
-
-func (c *Client) getOrRefreshCookies(ctx context.Context, origin string) ([]*http.Cookie, string, error) {
-	if cached, userAgent, ok := c.cookieCache.get(origin); ok {
-		return cached, userAgent, nil
-	}
-
-	fetchResult, err := c.fetch(ctx, origin)
-	if err != nil {
-		return nil, "", err
-	}
-
-	if len(fetchResult.Cookies) == 0 {
-		return nil, "", validation.NewError(validation.ErrorUpstreamUnknown, "flaresolverr did not return cookies", nil)
-	}
-
-	expiresAt := cookiesExpiry(fetchResult.Cookies)
-	userAgent := strings.TrimSpace(fetchResult.UserAgent)
-	if userAgent == "" {
-		userAgent = defaultBrowserUserAgent
-	}
-	c.cookieCache.set(origin, fetchResult.Cookies, userAgent, expiresAt)
-	return cloneCookies(fetchResult.Cookies), userAgent, nil
-}
-
-func cookiesExpiry(cookies []*http.Cookie) time.Time {
-	now := time.Now()
-	expiresAt := now.Add(cookieFallbackTTL)
-	foundExpiringCookie := false
-
-	for _, cookie := range cookies {
-		if cookie == nil {
-			continue
-		}
-		if cookie.Expires.IsZero() {
-			continue
-		}
-		if cookie.Expires.Before(now) {
-			continue
-		}
-		if !foundExpiringCookie || cookie.Expires.Before(expiresAt) {
-			expiresAt = cookie.Expires
-			foundExpiringCookie = true
-		}
-	}
-
-	expiresAt = expiresAt.Add(-cookieSafetyMargin)
-	if expiresAt.Before(now.Add(cookieMinTTL)) {
-		return now.Add(cookieMinTTL)
-	}
-	return expiresAt
-}
-
-func toHTTPCookies(in []flareSolverrCookie) []*http.Cookie {
-	out := make([]*http.Cookie, 0, len(in))
-	now := time.Now()
-
-	for _, item := range in {
-		if strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.Value) == "" {
-			continue
-		}
-
-		cookie := &http.Cookie{
-			Name:   item.Name,
-			Value:  item.Value,
-			Domain: strings.TrimSpace(item.Domain),
-			Path:   strings.TrimSpace(item.Path),
-		}
-		if cookie.Path == "" {
-			cookie.Path = "/"
-		}
-
-		if !math.IsNaN(item.Expires) && !math.IsInf(item.Expires, 0) && item.Expires > 0 {
-			sec := int64(item.Expires)
-			if sec > 0 {
-				expires := time.Unix(sec, 0)
-				if expires.After(now) {
-					cookie.Expires = expires
-				}
-			}
-		}
-
-		out = append(out, cookie)
-	}
-
-	return out
-}
-
-func cloneCookies(cookies []*http.Cookie) []*http.Cookie {
-	result := make([]*http.Cookie, 0, len(cookies))
-	for _, cookie := range cookies {
-		if cookie == nil {
-			continue
-		}
-		copy := *cookie
-		result = append(result, &copy)
-	}
-	return result
-}
-
-func originFromURL(rawURL string) (string, error) {
-	parsed, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil {
-		return "", err
-	}
-	if parsed.Scheme == "" || parsed.Host == "" {
-		return "", fmt.Errorf("missing scheme or host")
-	}
-	return parsed.Scheme + "://" + parsed.Host, nil
+	return nil
 }
 
 func endpointFromURL(sourceURL string) string {
@@ -636,5 +375,4 @@ func resetSharedScrapeSemaphoreForTests() {
 	scrapeSemaphoreOnce = sync.Once{}
 	sharedHTTPClient = nil
 	sharedHTTPOnce = sync.Once{}
-	sharedCookieCache = newCookieCache()
 }

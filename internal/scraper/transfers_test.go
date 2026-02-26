@@ -30,7 +30,7 @@ func TestFetchTransfersFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	result, _, err := FetchTransfers(

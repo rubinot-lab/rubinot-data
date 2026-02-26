@@ -59,7 +59,7 @@ func TestFetchCharacterFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	result, _, err := FetchCharacter(context.Background(), baseURLOf(api), "Terah", testFetchOptions(fs.URL))

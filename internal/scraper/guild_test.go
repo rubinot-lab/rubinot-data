@@ -40,7 +40,7 @@ func TestFetchGuildFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	result, _, err := FetchGuild(context.Background(), baseURLOf(api), "Panq Alliance", testFetchOptions(fs.URL))

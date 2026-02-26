@@ -65,7 +65,7 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	current, _, err := FetchCurrentAuctions(context.Background(), baseURLOf(api), 1, testFetchOptions(fs.URL))

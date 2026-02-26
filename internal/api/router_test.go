@@ -2,12 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/giovannirco/rubinot-data/internal/validation"
 )
@@ -216,21 +216,31 @@ func newFakeFlareSolverrForRouter(t *testing.T, eventsHTML string) *httptest.Ser
 			t.Fatalf("failed to decode flaresolverr request: %v", err)
 		}
 
-		html := "<html><body>ok</body></html>"
+		body := "<html><body>ok</body></html>"
+		solutionStatus := http.StatusOK
 		if strings.Contains(payload.URL, "/events") {
-			html = eventsHTML
+			body = eventsHTML
+		} else {
+			proxyResp, err := http.Get(payload.URL)
+			if err != nil {
+				t.Fatalf("failed to proxy to target: %v", err)
+			}
+			defer proxyResp.Body.Close()
+			raw, err := io.ReadAll(proxyResp.Body)
+			if err != nil {
+				t.Fatalf("failed to read proxy response: %v", err)
+			}
+			body = string(raw)
+			solutionStatus = proxyResp.StatusCode
 		}
 
 		resp := map[string]any{
 			"status":  "ok",
 			"message": "",
 			"solution": map[string]any{
-				"response": html,
-				"status":   http.StatusOK,
+				"response": body,
+				"status":   solutionStatus,
 				"url":      payload.URL,
-				"cookies": []map[string]any{
-					{"name": "cf_clearance", "value": "test-cookie", "path": "/", "expires": time.Now().Add(time.Hour).Unix()},
-				},
 			},
 		}
 		writeJSON(w, resp)

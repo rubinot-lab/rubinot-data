@@ -34,7 +34,7 @@ func TestFetchNewsByIDFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	entry, _, err := FetchNewsByID(context.Background(), baseURLOf(api), 3, testFetchOptions(fs.URL))
@@ -81,7 +81,7 @@ func TestFetchNewsListsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	archive, _, err := FetchNewsArchive(context.Background(), baseURLOf(api), 365, testFetchOptions(fs.URL))

@@ -10,7 +10,6 @@ import (
 func TestFetchWorldsFromAPI(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertPath(t, r, "/api/worlds")
-		assertHasCookieHeader(t, r)
 		writeJSON(w, map[string]any{
 			"worlds": []map[string]any{
 				{"id": 11, "name": "Auroria", "pvpType": "pvp", "pvpTypeLabel": "Open PvP", "worldType": "yellow", "locked": false, "playersOnline": 690},
@@ -23,7 +22,7 @@ func TestFetchWorldsFromAPI(t *testing.T) {
 	}))
 	defer api.Close()
 
-	fs := newFlareSolverrJSONServer(t, nil)
+	fs := newFlareSolverrProxyServer(t, api)
 	defer fs.Close()
 
 	result, sourceURL, err := FetchWorlds(context.Background(), baseURLOf(api), testFetchOptions(fs.URL))
