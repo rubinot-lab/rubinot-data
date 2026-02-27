@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -43,7 +44,7 @@ type characterAPIResponse struct {
 			Rent   int    `json:"rent"`
 			Size   int    `json:"size"`
 		} `json:"house"`
-		Partner           *string  `json:"partner"`
+		Partner           json.RawMessage `json:"partner"`
 		FormerNames       []string `json:"formerNames"`
 		Title             *string  `json:"title"`
 		Auction           any      `json:"auction"`
@@ -195,8 +196,18 @@ func mapCharacterResponse(payload characterAPIResponse) domain.CharacterResult {
 	}
 
 	marriedTo := ""
-	if player.Partner != nil {
-		marriedTo = strings.TrimSpace(*player.Partner)
+	if len(player.Partner) > 0 && string(player.Partner) != "null" {
+		var partnerObj struct {
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(player.Partner, &partnerObj) == nil && partnerObj.Name != "" {
+			marriedTo = strings.TrimSpace(partnerObj.Name)
+		} else {
+			var partnerStr string
+			if json.Unmarshal(player.Partner, &partnerStr) == nil {
+				marriedTo = strings.TrimSpace(partnerStr)
+			}
+		}
 	}
 	title := ""
 	if player.Title != nil {
