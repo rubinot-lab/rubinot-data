@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -68,6 +69,9 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 		{name: "news archive", path: "/v1/news/archive?days=90", httpCode: http.StatusOK, payloadKey: "newslist"},
 		{name: "news latest", path: "/v1/news/latest", httpCode: http.StatusOK, payloadKey: "newslist"},
 		{name: "news ticker", path: "/v1/news/newsticker", httpCode: http.StatusOK, payloadKey: "newslist"},
+		{name: "boosted", path: "/v1/boosted", httpCode: http.StatusOK, payloadKey: "boosted"},
+		{name: "maintenance", path: "/v1/maintenance", httpCode: http.StatusOK, payloadKey: "maintenance"},
+		{name: "geo-language", path: "/v1/geo-language", httpCode: http.StatusOK, payloadKey: "geo_language"},
 		{name: "deaths", path: "/v1/deaths/Belaria?page=1", httpCode: http.StatusOK, payloadKey: "deaths"},
 		{name: "deaths all", path: "/v1/deaths/Belaria/all", httpCode: http.StatusOK, payloadKey: "deaths"},
 		{name: "transfers", path: "/v1/transfers?page=1", httpCode: http.StatusOK, payloadKey: "transfers"},
@@ -75,6 +79,7 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 		{name: "banishments", path: "/v1/banishments/Belaria?page=1", httpCode: http.StatusOK, payloadKey: "banishments"},
 		{name: "banishments all", path: "/v1/banishments/Belaria/all", httpCode: http.StatusOK, payloadKey: "banishments"},
 		{name: "events", path: "/v1/events/schedule", httpCode: http.StatusOK, payloadKey: "events"},
+		{name: "events calendar", path: "/v1/events/calendar", httpCode: http.StatusOK, payloadKey: "events"},
 		{name: "auctions current", path: "/v1/auctions/current/1", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auctions current details", path: "/v1/auctions/current/1/details", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auctions current all", path: "/v1/auctions/current/all", httpCode: http.StatusOK, payloadKey: "auctions"},
@@ -104,6 +109,29 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRouterOutfitBinary(t *testing.T) {
+	api := newHappyAPIUpstream(t)
+	defer api.Close()
+
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
+	rec := performRequest(router, http.MethodGet, "/v1/outfit?looktype=131")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "image/png") {
+		t.Fatalf("expected content-type image/png, got %q", ct)
+	}
+	if rec.Body.Len() == 0 {
+		t.Fatal("expected non-empty binary body")
 	}
 }
 
@@ -353,6 +381,60 @@ func newHappyAPIUpstream(t *testing.T) *httptest.Server {
 			writeJSON(w, map[string]any{"entries": []map[string]any{{"race_name": "dragon", "players_killed_24h": 1, "creatures_killed_24h": 100, "players_killed_7d": 5, "creatures_killed_7d": 700}}, "totals": map[string]any{"players_killed_24h": 1, "creatures_killed_24h": 100, "players_killed_7d": 5, "creatures_killed_7d": 700}})
 		case r.URL.Path == "/api/news":
 			writeJSON(w, map[string]any{"tickers": []map[string]any{{"id": 200, "message": "<p>ticker</p>", "category_id": 1, "category": map[string]any{"id": 1, "name": "Events", "slug": "events", "color": "#fff", "icon": "calendar", "icon_url": "https://example/icon.gif"}, "author": "staff", "created_at": "2026-02-20T00:00:00.000Z"}}, "articles": []map[string]any{{"id": 140, "title": "News", "slug": "news", "summary": "sum", "content": "<p>body</p>", "cover_image": "cover.jpg", "author": "staff", "category": map[string]any{"id": 2, "name": "Community", "slug": "community", "color": "#000", "icon": "users", "icon_url": "https://example/icon2.gif"}, "published_at": "2026-02-24T00:00:00.000Z"}}})
+		case r.URL.Path == "/api/boosted":
+			writeJSON(w, map[string]any{
+				"boss":    map[string]any{"id": 1226, "name": "Eradicator", "looktype": 875},
+				"monster": map[string]any{"id": 1145, "name": "Vicious Squire", "looktype": 131},
+			})
+		case r.URL.Path == "/api/maintenance":
+			writeJSON(w, map[string]any{"isClosed": false, "closeMessage": "Server is under maintenance, please visit later."})
+		case r.URL.Path == "/api/geo-language":
+			writeJSON(w, map[string]any{"language": "pt", "countryCode": "BR"})
+		case r.URL.Path == "/api/events/calendar":
+			writeJSON(w, map[string]any{
+				"events": []map[string]any{
+					{
+						"id":                 9,
+						"name":               "Gaz'Haragoth",
+						"description":        "Boss spawn",
+						"colorDark":          "#735D10",
+						"colorLight":         "#8B6D05",
+						"displayPriority":    5,
+						"specialEffect":      nil,
+						"startDate":          nil,
+						"endDate":            nil,
+						"isRecurring":        true,
+						"recurringWeekdays":  nil,
+						"recurringMonthDays": []int{1, 15},
+						"recurringStart":     "2026-02-01T16:00:00.000Z",
+						"recurringEnd":       "2026-04-30T16:00:00.000Z",
+						"tags":               []string{"boss"},
+					},
+				},
+				"eventsByDay": map[string]any{
+					"1": []map[string]any{
+						{
+							"id":                 9,
+							"name":               "Gaz'Haragoth",
+							"description":        "Boss spawn",
+							"colorDark":          "#735D10",
+							"colorLight":         "#8B6D05",
+							"displayPriority":    5,
+							"specialEffect":      nil,
+							"startDate":          nil,
+							"endDate":            nil,
+							"isRecurring":        true,
+							"recurringWeekdays":  nil,
+							"recurringMonthDays": []int{1, 15},
+							"recurringStart":     "2026-02-01T16:00:00.000Z",
+							"recurringEnd":       "2026-04-30T16:00:00.000Z",
+							"tags":               []string{"boss"},
+						},
+					},
+				},
+				"month": 2,
+				"year":  2026,
+			})
 		case r.URL.Path == "/api/deaths":
 			writeJSON(w, map[string]any{"deaths": []map[string]any{{"player_id": 1, "time": "1772043027", "level": 300, "killed_by": "dragon", "is_player": 0, "mostdamage_by": "dragon", "mostdamage_is_player": 0, "victim": "Victim", "world_id": 15}}, "pagination": map[string]any{"currentPage": 1, "totalPages": 1, "totalCount": 1, "itemsPerPage": 50}})
 		case r.URL.Path == "/api/transfers":
@@ -365,6 +447,9 @@ func newHappyAPIUpstream(t *testing.T) *httptest.Server {
 			writeJSON(w, map[string]any{"auctions": []any{}, "pagination": map[string]any{"page": 1, "limit": 25, "total": 1, "totalPages": 1}})
 		case strings.HasPrefix(r.URL.Path, "/api/bazaar/"):
 			writeJSON(w, map[string]any{"auction": map[string]any{"id": 193226, "state": 1, "stateName": "active", "playerId": 1, "owner": 2, "startingValue": 100, "currentValue": 200, "winningBid": 0, "highestBidderId": 0, "auctionStart": 1772000000, "auctionEnd": 1772100000}, "player": map[string]any{"name": "Char", "level": 1000, "vocation": 6, "vocationName": "Elder Druid", "sex": 0, "worldId": 15, "worldName": "Belaria", "lookType": 1, "lookHead": 2, "lookBody": 3, "lookLegs": 4, "lookFeet": 5, "lookAddons": 0, "lookMount": 0}, "general": map[string]any{"achievementPoints": 20, "charmPoints": 10, "magLevel": 30, "skills": map[string]any{"axe": 1, "club": 2, "distance": 3, "shielding": 4, "sword": 5}}, "highlightItems": []any{}, "highlightAugments": []any{}})
+		case r.URL.Path == "/api/outfit":
+			w.Header().Set("Content-Type", "image/png")
+			_, _ = w.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A})
 		default:
 			t.Fatalf("unexpected upstream request: %s", r.URL.String())
 		}
@@ -481,7 +566,17 @@ func newMockCDPForRouter(t *testing.T, apiUpstream *httptest.Server) *httptest.S
 						} else {
 							defer resp.Body.Close()
 							raw, _ := io.ReadAll(resp.Body)
-							value = string(raw)
+							if strings.Contains(req.Params.Expression, "bodyBase64") {
+								payload := map[string]any{
+									"status":      resp.StatusCode,
+									"contentType": resp.Header.Get("Content-Type"),
+									"bodyBase64":  base64.StdEncoding.EncodeToString(raw),
+								}
+								encoded, _ := json.Marshal(payload)
+								value = string(encoded)
+							} else {
+								value = string(raw)
+							}
 						}
 					} else {
 						results := make([]map[string]string, 0, len(matches))

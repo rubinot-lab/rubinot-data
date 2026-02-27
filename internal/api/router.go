@@ -113,8 +113,21 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/news/newsticker", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getNewsNewsticker(c)
 		}))
+		v1.GET("/boosted", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getBoosted(c)
+		}))
+		v1.GET("/maintenance", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getMaintenance(c)
+		}))
+		v1.GET("/geo-language", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getGeoLanguage(c)
+		}))
+		v1.GET("/outfit", getOutfit)
 		v1.GET("/events/schedule", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getEventsSchedule(c)
+		}))
+		v1.GET("/events/calendar", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getEventsCalendar(c)
 		}))
 		v1.GET("/auctions/current/all/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getAllCurrentAuctionsDetails(c)
@@ -753,6 +766,74 @@ func getNewsNewsticker(c *gin.Context) (endpointResult, error) {
 	}, nil
 }
 
+func getBoosted(c *gin.Context) (endpointResult, error) {
+	baseURL := resolvedBaseURL
+	boosted, sourceURL, err := scraper.FetchBoosted(c.Request.Context(), baseURL, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "boosted",
+		Payload:    boosted,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getMaintenance(c *gin.Context) (endpointResult, error) {
+	baseURL := resolvedBaseURL
+	maintenance, sourceURL, err := scraper.FetchMaintenance(c.Request.Context(), baseURL, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "maintenance",
+		Payload:    maintenance,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getGeoLanguage(c *gin.Context) (endpointResult, error) {
+	baseURL := resolvedBaseURL
+	geoLanguage, sourceURL, err := scraper.FetchGeoLanguage(c.Request.Context(), baseURL, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "geo_language",
+		Payload:    geoLanguage,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getOutfit(c *gin.Context) {
+	baseURL := resolvedBaseURL
+	body, contentType, sourceURL, err := scraper.FetchOutfitImage(c.Request.Context(), baseURL, c.Request.URL.RawQuery, resolvedOpts)
+	if err != nil {
+		errorCode := resolveErrorCode(err)
+		httpCode := statusCodeFromErrorCode(errorCode)
+		message := resolveErrorMessage(errorCode, err)
+		if httpCode == http.StatusBadRequest {
+			route := c.FullPath()
+			if route == "" {
+				route = "unknown"
+			}
+			validationRejections.WithLabelValues(route, strconv.Itoa(errorCode)).Inc()
+		}
+		c.JSON(httpCode, errorEnvelope(httpCode, errorCode, message, []string{sourceURL}))
+		return
+	}
+
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "image/png"
+	}
+	c.Header("Cache-Control", "public, max-age=300")
+	c.Header("X-Source-URL", sourceURL)
+	c.Data(http.StatusOK, contentType, body)
+}
+
 func getEventsSchedule(c *gin.Context) (endpointResult, error) {
 	month, monthErr := validation.ParseMonth(c.Query("month"))
 	if monthErr != nil {
@@ -773,6 +854,20 @@ func getEventsSchedule(c *gin.Context) (endpointResult, error) {
 
 	baseURL := resolvedBaseURL
 	events, sourceURL, err := scraper.FetchEventsSchedule(c.Request.Context(), baseURL, month, year, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "events",
+		Payload:    events,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getEventsCalendar(c *gin.Context) (endpointResult, error) {
+	baseURL := resolvedBaseURL
+	events, sourceURL, err := scraper.FetchEventsCalendar(c.Request.Context(), baseURL, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
