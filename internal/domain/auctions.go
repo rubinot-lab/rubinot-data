@@ -76,6 +76,15 @@ type AuctionsResult struct {
 	Pagination   *AuctionsPagination `json:"pagination,omitempty"`
 }
 
+type AuctionsDetailsResult struct {
+	Type         string              `json:"type"`
+	Page         int                 `json:"page"`
+	TotalResults int                 `json:"total_results"`
+	TotalPages   int                 `json:"total_pages"`
+	Entries      []AuctionDetail     `json:"entries"`
+	Pagination   *AuctionsPagination `json:"pagination,omitempty"`
+}
+
 type AuctionDetail struct {
 	AuctionID         int              `json:"auction_id"`
 	State             int              `json:"state,omitempty"`

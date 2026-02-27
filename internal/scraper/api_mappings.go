@@ -51,6 +51,7 @@ var vocationIDToName = map[int]string{
 	7: "Royal Paladin",
 	8: "Elite Knight",
 	9: "Monk",
+	10: "Exalted Monk",
 }
 
 func worldNameByID(id int) string {

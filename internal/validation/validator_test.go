@@ -117,6 +117,20 @@ func TestWorldExists(t *testing.T) {
 	})
 }
 
+func TestAllWorlds(t *testing.T) {
+	validator := testValidator()
+	worlds := validator.AllWorlds()
+	if len(worlds) != 2 {
+		t.Fatalf("expected 2 worlds, got %d", len(worlds))
+	}
+	if worlds[0].ID != 15 || worlds[0].Name != "Belaria" {
+		t.Fatalf("unexpected first world: %+v", worlds[0])
+	}
+	if worlds[1].ID != 22 || worlds[1].Name != "Serenian" {
+		t.Fatalf("unexpected second world: %+v", worlds[1])
+	}
+}
+
 func TestTownExists(t *testing.T) {
 	validator := testValidator()
 

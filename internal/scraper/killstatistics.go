@@ -60,6 +60,14 @@ func FetchKillstatistics(
 	scrapeRequests.WithLabelValues("killstatistics", "ok").Inc()
 
 	parseStarted := time.Now()
+	result := mapKillstatisticsResponse(worldName, payload)
+	parseDuration.WithLabelValues("killstatistics").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("killstatistics").Set(float64(len(result.Entries)))
+
+	return result, sourceURL, nil
+}
+
+func mapKillstatisticsResponse(worldName string, payload killstatisticsAPIResponse) domain.KillstatisticsResult {
 	entries := make([]domain.KillstatisticsEntry, 0, len(payload.Entries))
 	for _, row := range payload.Entries {
 		entries = append(entries, domain.KillstatisticsEntry{
@@ -71,7 +79,7 @@ func FetchKillstatistics(
 		})
 	}
 
-	result := domain.KillstatisticsResult{
+	return domain.KillstatisticsResult{
 		World:   worldName,
 		Entries: entries,
 		Total: domain.KillstatisticsTotal{
@@ -81,8 +89,4 @@ func FetchKillstatistics(
 			LastWeekKilled:        payload.Totals.CreaturesKilled7d,
 		},
 	}
-	parseDuration.WithLabelValues("killstatistics").Observe(time.Since(parseStarted).Seconds())
-	ParseItems.WithLabelValues("killstatistics").Set(float64(len(result.Entries)))
-
-	return result, sourceURL, nil
 }

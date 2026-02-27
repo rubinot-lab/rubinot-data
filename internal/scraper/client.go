@@ -25,6 +25,8 @@ const (
 	defaultMaxConcurrency   = 8
 	defaultRequestTimeout   = 140 * time.Second
 	defaultBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
+	cdpBatchSize            = 6
+	cdpPageFetchMaxRetries  = 3
 )
 
 type FetchOptions struct {
@@ -286,6 +288,137 @@ func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error
 	return parseJSONBody(body, result)
 }
 
+func (c *Client) FetchAllPages(
+	ctx context.Context,
+	firstPageURL string,
+	buildPageURL func(page int) string,
+	extractTotalPages func(body string) (int, error),
+) ([]string, []string, error) {
+	if strings.TrimSpace(firstPageURL) == "" {
+		return nil, nil, fmt.Errorf("first page URL is required")
+	}
+	if buildPageURL == nil {
+		return nil, nil, fmt.Errorf("build page URL function is required")
+	}
+	if extractTotalPages == nil {
+		return nil, nil, fmt.Errorf("extract total pages function is required")
+	}
+
+	firstBody, err := c.fetchJSONBody(ctx, firstPageURL)
+	if err != nil {
+		return nil, []string{firstPageURL}, err
+	}
+
+	totalPages, err := extractTotalPages(firstBody)
+	if err != nil {
+		return nil, []string{firstPageURL}, err
+	}
+	if totalPages <= 0 {
+		totalPages = 1
+	}
+
+	bodies := make([]string, totalPages)
+	sources := make([]string, totalPages)
+	bodies[0] = firstBody
+	sources[0] = firstPageURL
+	if totalPages == 1 {
+		return bodies, sources, nil
+	}
+
+	type pageRequest struct {
+		page int
+		url  string
+		path string
+	}
+
+	requests := make([]pageRequest, 0, totalPages-1)
+	for page := 2; page <= totalPages; page++ {
+		pageURL := buildPageURL(page)
+		path, pathErr := apiPathFromURL(pageURL)
+		if pathErr != nil {
+			return nil, nil, pathErr
+		}
+		requests = append(requests, pageRequest{page: page, url: pageURL, path: path})
+	}
+
+	cdp, err := c.ensureCDP(ctx)
+	if err != nil {
+		return nil, sources, validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP init failed: %v", err), err)
+	}
+	if cdp == nil {
+		return nil, sources, validation.NewError(validation.ErrorFlareSolverrConnection, "CDP_URL not configured; JSON API requires CDP", nil)
+	}
+
+	remaining := requests
+	var lastErr error
+	for attempt := 0; attempt < cdpPageFetchMaxRetries && len(remaining) > 0; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+
+		failed := make([]pageRequest, 0)
+		for start := 0; start < len(remaining); start += cdpBatchSize {
+			end := start + cdpBatchSize
+			if end > len(remaining) {
+				end = len(remaining)
+			}
+
+			chunk := remaining[start:end]
+			paths := make([]string, 0, len(chunk))
+			for _, request := range chunk {
+				paths = append(paths, request.path)
+			}
+
+			started := time.Now()
+			results, batchErr := cdp.BatchFetch(ctx, paths)
+			CDPFetchDuration.Observe(time.Since(started).Seconds())
+
+			if batchErr != nil {
+				CDPFetchRequests.WithLabelValues("error").Add(float64(len(chunk)))
+				globalCDPMu.Lock()
+				globalCDPReady = false
+				globalCDPMu.Unlock()
+				lastErr = validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP batch fetch failed: %v", batchErr), batchErr)
+				failed = append(failed, chunk...)
+				continue
+			}
+
+			for idx, result := range results {
+				request := chunk[idx]
+				if result.Status != "fulfilled" {
+					CDPFetchRequests.WithLabelValues("error").Inc()
+					lastErr = validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("CDP batch item failed: %s", strings.TrimSpace(result.Value)), nil)
+					failed = append(failed, request)
+					continue
+				}
+
+				trimmed := strings.TrimSpace(result.Value)
+				if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+					CDPFetchRequests.WithLabelValues("non_json").Inc()
+					lastErr = validation.NewError(validation.ErrorUpstreamUnknown, "CDP returned non-JSON response", nil)
+					failed = append(failed, request)
+					continue
+				}
+
+				CDPFetchRequests.WithLabelValues("ok").Inc()
+				UpstreamStatus.WithLabelValues(endpointFromURL(request.url), "200").Inc()
+				bodies[request.page-1] = result.Value
+				sources[request.page-1] = request.url
+			}
+		}
+		remaining = failed
+	}
+
+	if len(remaining) > 0 {
+		if lastErr == nil {
+			lastErr = validation.NewError(validation.ErrorUpstreamUnknown, "failed to fetch all paginated results", nil)
+		}
+		return nil, sources, lastErr
+	}
+
+	return bodies, sources, nil
+}
+
 func (c *Client) fetchJSONBody(ctx context.Context, apiURL string) (string, error) {
 	cdp, err := c.ensureCDP(ctx)
 	if err != nil {
@@ -299,13 +432,9 @@ func (c *Client) fetchJSONBody(ctx context.Context, apiURL string) (string, erro
 }
 
 func (c *Client) fetchViaCDP(ctx context.Context, cdp *CDPClient, apiURL string) (string, error) {
-	parsed, err := url.Parse(apiURL)
+	fetchPath, err := apiPathFromURL(apiURL)
 	if err != nil {
-		return "", fmt.Errorf("parse API URL: %w", err)
-	}
-	fetchPath := parsed.Path
-	if parsed.RawQuery != "" {
-		fetchPath += "?" + parsed.RawQuery
+		return "", err
 	}
 
 	const maxRetries = 3
@@ -341,6 +470,19 @@ func (c *Client) fetchViaCDP(ctx context.Context, cdp *CDPClient, apiURL string)
 	}
 
 	return "", lastErr
+}
+
+func apiPathFromURL(apiURL string) (string, error) {
+	parsed, err := url.Parse(apiURL)
+	if err != nil {
+		return "", fmt.Errorf("parse API URL: %w", err)
+	}
+
+	fetchPath := parsed.Path
+	if parsed.RawQuery != "" {
+		fetchPath += "?" + parsed.RawQuery
+	}
+	return fetchPath, nil
 }
 
 func parseJSONBody(body string, result any) error {
