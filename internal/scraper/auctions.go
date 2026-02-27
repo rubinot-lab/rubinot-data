@@ -164,6 +164,56 @@ func FetchAllAuctionHistory(
 	return fetchAllAuctionsList(ctx, baseURL, "history", opts)
 }
 
+func FetchCurrentAuctionsDetails(
+	ctx context.Context,
+	baseURL string,
+	page int,
+	opts FetchOptions,
+) (domain.AuctionsDetailsResult, []string, error) {
+	auctions, sourceURL, err := fetchAuctionsList(ctx, baseURL, "current", page, opts)
+	if err != nil {
+		return domain.AuctionsDetailsResult{}, []string{sourceURL}, err
+	}
+	return fetchAuctionDetailsForEntries(ctx, baseURL, auctions, []string{sourceURL}, opts)
+}
+
+func FetchAllCurrentAuctionsDetails(
+	ctx context.Context,
+	baseURL string,
+	opts FetchOptions,
+) (domain.AuctionsDetailsResult, []string, error) {
+	auctions, sources, err := fetchAllAuctionsList(ctx, baseURL, "current", opts)
+	if err != nil {
+		return domain.AuctionsDetailsResult{}, sources, err
+	}
+	return fetchAuctionDetailsForEntries(ctx, baseURL, auctions, sources, opts)
+}
+
+func FetchAuctionHistoryDetails(
+	ctx context.Context,
+	baseURL string,
+	page int,
+	opts FetchOptions,
+) (domain.AuctionsDetailsResult, []string, error) {
+	auctions, sourceURL, err := fetchAuctionsList(ctx, baseURL, "history", page, opts)
+	if err != nil {
+		return domain.AuctionsDetailsResult{}, []string{sourceURL}, err
+	}
+	return fetchAuctionDetailsForEntries(ctx, baseURL, auctions, []string{sourceURL}, opts)
+}
+
+func FetchAllAuctionHistoryDetails(
+	ctx context.Context,
+	baseURL string,
+	opts FetchOptions,
+) (domain.AuctionsDetailsResult, []string, error) {
+	auctions, sources, err := fetchAllAuctionsList(ctx, baseURL, "history", opts)
+	if err != nil {
+		return domain.AuctionsDetailsResult{}, sources, err
+	}
+	return fetchAuctionDetailsForEntries(ctx, baseURL, auctions, sources, opts)
+}
+
 func fetchAuctionsList(
 	ctx context.Context,
 	baseURL string,
@@ -357,7 +407,72 @@ func FetchAuctionDetail(
 	scrapeRequests.WithLabelValues("auctions", "ok").Inc()
 
 	parseStarted := time.Now()
-	result := domain.AuctionDetail{
+	result := mapAuctionDetailResponse(payload)
+	parseDuration.WithLabelValues("auctions").Observe(time.Since(parseStarted).Seconds())
+
+	return result, []string{sourceURL}, nil
+}
+
+func fetchAuctionDetailsForEntries(
+	ctx context.Context,
+	baseURL string,
+	auctions domain.AuctionsResult,
+	baseSources []string,
+	opts FetchOptions,
+) (domain.AuctionsDetailsResult, []string, error) {
+	if len(auctions.Entries) == 0 {
+		return domain.AuctionsDetailsResult{
+			Type:         auctions.Type,
+			Page:         auctions.Page,
+			TotalResults: auctions.TotalResults,
+			TotalPages:   auctions.TotalPages,
+			Entries:      []domain.AuctionDetail{},
+			Pagination:   auctions.Pagination,
+		}, append([]string{}, baseSources...), nil
+	}
+
+	detailURLs := make([]string, 0, len(auctions.Entries))
+	for _, entry := range auctions.Entries {
+		detailURLs = append(detailURLs, fmt.Sprintf("%s/api/bazaar/%d", strings.TrimRight(baseURL, "/"), entry.AuctionID))
+	}
+
+	client := NewClient(opts)
+	started := time.Now()
+	bodies, err := fetchBatchJSONBodies(ctx, client, detailURLs)
+	scrapeDuration.WithLabelValues("auctions").Observe(time.Since(started).Seconds())
+	sources := append(append([]string{}, baseSources...), detailURLs...)
+	if err != nil {
+		scrapeRequests.WithLabelValues("auctions", "error").Inc()
+		return domain.AuctionsDetailsResult{}, sources, err
+	}
+	scrapeRequests.WithLabelValues("auctions", "ok").Inc()
+
+	parseStarted := time.Now()
+	details := make([]domain.AuctionDetail, 0, len(bodies))
+	for _, body := range bodies {
+		var payload auctionDetailAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			ParseErrors.WithLabelValues("auctions", "decode_error").Inc()
+			return domain.AuctionsDetailsResult{}, sources, parseErr
+		}
+		details = append(details, mapAuctionDetailResponse(payload))
+	}
+
+	result := domain.AuctionsDetailsResult{
+		Type:         auctions.Type,
+		Page:         auctions.Page,
+		TotalResults: auctions.TotalResults,
+		TotalPages:   auctions.TotalPages,
+		Entries:      details,
+		Pagination:   auctions.Pagination,
+	}
+	parseDuration.WithLabelValues("auctions").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("auctions").Set(float64(len(result.Entries)))
+	return result, sources, nil
+}
+
+func mapAuctionDetailResponse(payload auctionDetailAPIResponse) domain.AuctionDetail {
+	return domain.AuctionDetail{
 		AuctionID:         payload.Auction.ID,
 		State:             payload.Auction.State,
 		StateName:         strings.TrimSpace(payload.Auction.StateName),
@@ -395,9 +510,6 @@ func FetchAuctionDetail(
 		HighlightItems:    toAuctionItems(payload.HighlightItems),
 		HighlightAugments: toAuctionAugments(payload.HighlightAugments),
 	}
-	parseDuration.WithLabelValues("auctions").Observe(time.Since(parseStarted).Seconds())
-
-	return result, []string{sourceURL}, nil
 }
 
 func mapAuctionListEntry(row struct {

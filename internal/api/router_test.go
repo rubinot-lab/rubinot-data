@@ -47,6 +47,9 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 		payloadKey string
 	}{
 		{name: "worlds", path: "/v1/worlds", httpCode: http.StatusOK, payloadKey: "worlds"},
+		{name: "world all", path: "/v1/world/all", httpCode: http.StatusOK, payloadKey: "worlds"},
+		{name: "world all details", path: "/v1/world/all/details", httpCode: http.StatusOK, payloadKey: "worlds"},
+		{name: "world all dashboard", path: "/v1/world/all/dashboard", httpCode: http.StatusOK, payloadKey: "worlds"},
 		{name: "world details", path: "/v1/world/Belaria/details", httpCode: http.StatusOK, payloadKey: "world"},
 		{name: "world dashboard", path: "/v1/world/Belaria/dashboard", httpCode: http.StatusOK, payloadKey: "dashboard"},
 		{name: "world", path: "/v1/world/Belaria", httpCode: http.StatusOK, payloadKey: "world"},
@@ -58,6 +61,8 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 		{name: "guilds all details", path: "/v1/guilds/Belaria/all/details", httpCode: http.StatusOK, payloadKey: "guilds"},
 		{name: "highscores", path: "/v1/highscores/Belaria/experience/all/1", httpCode: http.StatusOK, payloadKey: "highscores"},
 		{name: "highscores all", path: "/v1/highscores/Belaria/experience/all/all", httpCode: http.StatusOK, payloadKey: "highscores"},
+		{name: "highscores all worlds", path: "/v1/highscores/all/experience/all/1", httpCode: http.StatusOK, payloadKey: "highscores"},
+		{name: "highscores all worlds all pages", path: "/v1/highscores/all/experience/all/all", httpCode: http.StatusOK, payloadKey: "highscores"},
 		{name: "killstatistics", path: "/v1/killstatistics/Belaria", httpCode: http.StatusOK, payloadKey: "killstatistics"},
 		{name: "news by id", path: "/v1/news/id/140", httpCode: http.StatusOK, payloadKey: "news"},
 		{name: "news archive", path: "/v1/news/archive?days=90", httpCode: http.StatusOK, payloadKey: "newslist"},
@@ -71,9 +76,13 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 		{name: "banishments all", path: "/v1/banishments/Belaria/all", httpCode: http.StatusOK, payloadKey: "banishments"},
 		{name: "events", path: "/v1/events/schedule", httpCode: http.StatusOK, payloadKey: "events"},
 		{name: "auctions current", path: "/v1/auctions/current/1", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auctions current details", path: "/v1/auctions/current/1/details", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auctions current all", path: "/v1/auctions/current/all", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auctions current all details", path: "/v1/auctions/current/all/details", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auctions history", path: "/v1/auctions/history/1", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auctions history details", path: "/v1/auctions/history/1/details", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auctions history all", path: "/v1/auctions/history/all", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auctions history all details", path: "/v1/auctions/history/all/details", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auction detail", path: "/v1/auctions/193226", httpCode: http.StatusOK, payloadKey: "auction"},
 		{name: "houses deprecated", path: "/v1/houses/Belaria/Venore", httpCode: http.StatusGone, errorCode: validation.ErrorEndpointDeprecated},
 		{name: "house deprecated", path: "/v1/house/Belaria/50", httpCode: http.StatusGone, errorCode: validation.ErrorEndpointDeprecated},
@@ -114,6 +123,8 @@ func TestRouterHighscoresRedirects(t *testing.T) {
 	}{
 		{path: "/v1/highscores/Belaria", location: "/v1/highscores/Belaria/experience/all/1"},
 		{path: "/v1/highscores/Belaria/magic", location: "/v1/highscores/Belaria/magic/all/1"},
+		{path: "/v1/highscores/Belaria/experience/all", location: "/v1/highscores/Belaria/experience/all/1"},
+		{path: "/v1/highscores/all/experience/all", location: "/v1/highscores/all/experience/all/1"},
 	}
 
 	for _, tc := range testCases {

@@ -2,8 +2,10 @@ package scraper
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -169,5 +171,107 @@ func TestFetchAllAuctionsFromAPI(t *testing.T) {
 	}
 	if history.TotalPages != 1 {
 		t.Fatalf("expected history total pages 1, got %d", history.TotalPages)
+	}
+}
+
+func TestFetchCurrentAuctionsDetailsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/bazaar":
+			assertQuery(t, r, "page", "1")
+			assertQuery(t, r, "limit", "50")
+			writeJSON(w, map[string]any{
+				"auctions": []map[string]any{
+					{"id": 501, "name": "One", "state": 1, "stateName": "active", "level": 100, "vocation": 6, "vocationName": "Elder Druid", "sex": 0, "worldId": 15, "worldName": "Belaria"},
+					{"id": 502, "name": "Two", "state": 1, "stateName": "active", "level": 200, "vocation": 7, "vocationName": "Royal Paladin", "sex": 1, "worldId": 15, "worldName": "Belaria"},
+				},
+				"pagination": map[string]any{"page": 1, "limit": 50, "total": 2, "totalPages": 1},
+			})
+		case "/api/bazaar/501":
+			writeJSON(w, map[string]any{
+				"auction": map[string]any{"id": 501, "state": 1, "stateName": "active", "playerId": 1, "owner": 1, "startingValue": 100, "currentValue": 200, "winningBid": 0, "highestBidderId": 0, "auctionStart": int64(1772000000), "auctionEnd": int64(1772100000)},
+				"player":  map[string]any{"name": "One", "level": 100, "vocation": 6, "vocationName": "Elder Druid", "sex": 0, "worldId": 15, "worldName": "Belaria"},
+				"general": map[string]any{"achievementPoints": 10, "charmPoints": 10, "magLevel": 10, "skills": map[string]any{"axe": 1}},
+			})
+		case "/api/bazaar/502":
+			writeJSON(w, map[string]any{
+				"auction": map[string]any{"id": 502, "state": 1, "stateName": "active", "playerId": 2, "owner": 2, "startingValue": 300, "currentValue": 400, "winningBid": 0, "highestBidderId": 0, "auctionStart": int64(1772000001), "auctionEnd": int64(1772100001)},
+				"player":  map[string]any{"name": "Two", "level": 200, "vocation": 7, "vocationName": "Royal Paladin", "sex": 1, "worldId": 15, "worldName": "Belaria"},
+				"general": map[string]any{"achievementPoints": 20, "charmPoints": 20, "magLevel": 20, "skills": map[string]any{"axe": 2}},
+			})
+		default:
+			failUnexpectedRequest(t, r)
+		}
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	details, sources, err := FetchCurrentAuctionsDetails(context.Background(), baseURLOf(api), 1, testFetchOptionsWithCDP("", cdpSrv.URL))
+	if err != nil {
+		t.Fatalf("current auctions details error: %v", err)
+	}
+	if len(details.Entries) != 2 {
+		t.Fatalf("expected 2 detail entries, got %d", len(details.Entries))
+	}
+	if details.Entries[0].AuctionID != 501 || details.Entries[1].AuctionID != 502 {
+		t.Fatalf("unexpected detail ids: %+v", details.Entries)
+	}
+	if len(sources) != 3 {
+		t.Fatalf("expected 3 sources, got %d", len(sources))
+	}
+}
+
+func TestFetchAllAuctionHistoryDetailsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/bazaar/history":
+			assertQuery(t, r, "limit", "50")
+			page := mustAtoi(t, r.URL.Query().Get("page"))
+			writeJSON(w, map[string]any{
+				"auctions": []map[string]any{{
+					"id":           800 + page,
+					"name":         "History",
+					"state":        2,
+					"stateName":    "finished",
+					"level":        300,
+					"vocation":     6,
+					"vocationName": "Elder Druid",
+					"sex":          0,
+					"worldId":      15,
+					"worldName":    "Belaria",
+				}},
+				"pagination": map[string]any{"page": page, "limit": 50, "total": 2, "totalPages": 2},
+			})
+		case "/api/bazaar/801", "/api/bazaar/802":
+			id := strings.TrimPrefix(r.URL.Path, "/api/bazaar/")
+			auctionID := mustAtoi(t, id)
+			writeJSON(w, map[string]any{
+				"auction": map[string]any{"id": auctionID, "state": 2, "stateName": "finished", "playerId": auctionID, "owner": auctionID, "startingValue": 500, "currentValue": 700, "winningBid": 700, "highestBidderId": 50, "auctionStart": int64(1772001000), "auctionEnd": int64(1772101000)},
+				"player":  map[string]any{"name": fmt.Sprintf("H-%d", auctionID), "level": 300, "vocation": 6, "vocationName": "Elder Druid", "sex": 0, "worldId": 15, "worldName": "Belaria"},
+				"general": map[string]any{"achievementPoints": 30, "charmPoints": 30, "magLevel": 30, "skills": map[string]any{"axe": 3}},
+			})
+		default:
+			failUnexpectedRequest(t, r)
+		}
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	details, sources, err := FetchAllAuctionHistoryDetails(context.Background(), baseURLOf(api), testFetchOptionsWithCDP("", cdpSrv.URL))
+	if err != nil {
+		t.Fatalf("all history auctions details error: %v", err)
+	}
+	if len(details.Entries) != 2 {
+		t.Fatalf("expected 2 detail entries, got %d", len(details.Entries))
+	}
+	if details.TotalPages != 1 {
+		t.Fatalf("expected total pages 1, got %d", details.TotalPages)
+	}
+	if len(sources) != 4 {
+		t.Fatalf("expected 4 sources (2 list + 2 detail), got %d", len(sources))
 	}
 }
