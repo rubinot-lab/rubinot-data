@@ -123,6 +123,7 @@ func NewRouter() (*gin.Engine, error) {
 			return getGeoLanguage(c)
 		}))
 		v1.GET("/outfit", getOutfit)
+		v1.GET("/outfit/:name", getOutfitByCharacterName)
 		v1.GET("/events/schedule", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getEventsSchedule(c)
 		}))
@@ -812,26 +813,70 @@ func getOutfit(c *gin.Context) {
 	baseURL := resolvedBaseURL
 	body, contentType, sourceURL, err := scraper.FetchOutfitImage(c.Request.Context(), baseURL, c.Request.URL.RawQuery, resolvedOpts)
 	if err != nil {
-		errorCode := resolveErrorCode(err)
-		httpCode := statusCodeFromErrorCode(errorCode)
-		message := resolveErrorMessage(errorCode, err)
-		if httpCode == http.StatusBadRequest {
-			route := c.FullPath()
-			if route == "" {
-				route = "unknown"
-			}
-			validationRejections.WithLabelValues(route, strconv.Itoa(errorCode)).Inc()
-		}
-		c.JSON(httpCode, errorEnvelope(httpCode, errorCode, message, []string{sourceURL}))
+		writeOutfitError(c, err, []string{sourceURL})
 		return
 	}
 
+	writeOutfitResponse(c, body, contentType, sourceURL)
+}
+
+func getOutfitByCharacterName(c *gin.Context) {
+	characterInput := strings.TrimSpace(c.Param("name"))
+	canonicalName, validationErr := validation.IsCharacterNameValid(characterInput)
+	if validationErr != nil {
+		writeOutfitError(c, validationErr, []string{})
+		return
+	}
+
+	character, characterSourceURL, err := scraper.FetchCharacter(c.Request.Context(), resolvedBaseURL, canonicalName, resolvedOpts)
+	if err != nil {
+		writeOutfitError(c, err, []string{characterSourceURL})
+		return
+	}
+
+	if character.CharacterInfo.Outfit == nil {
+		writeOutfitError(c, validation.NewError(validation.ErrorUpstreamUnknown, "character outfit is not available", nil), []string{characterSourceURL})
+		return
+	}
+
+	query := url.Values{}
+	query.Set("looktype", strconv.Itoa(character.CharacterInfo.Outfit.LookType))
+	query.Set("lookhead", strconv.Itoa(character.CharacterInfo.Outfit.LookHead))
+	query.Set("lookbody", strconv.Itoa(character.CharacterInfo.Outfit.LookBody))
+	query.Set("looklegs", strconv.Itoa(character.CharacterInfo.Outfit.LookLegs))
+	query.Set("lookfeet", strconv.Itoa(character.CharacterInfo.Outfit.LookFeet))
+	query.Set("lookaddons", strconv.Itoa(character.CharacterInfo.Outfit.LookAddons))
+
+	body, contentType, outfitSourceURL, err := scraper.FetchOutfitImage(c.Request.Context(), resolvedBaseURL, query.Encode(), resolvedOpts)
+	if err != nil {
+		writeOutfitError(c, err, []string{characterSourceURL, outfitSourceURL})
+		return
+	}
+
+	writeOutfitResponse(c, body, contentType, outfitSourceURL)
+}
+
+func writeOutfitResponse(c *gin.Context, body []byte, contentType, sourceURL string) {
 	if strings.TrimSpace(contentType) == "" {
 		contentType = "image/png"
 	}
 	c.Header("Cache-Control", "public, max-age=300")
 	c.Header("X-Source-URL", sourceURL)
 	c.Data(http.StatusOK, contentType, body)
+}
+
+func writeOutfitError(c *gin.Context, err error, sources []string) {
+	errorCode := resolveErrorCode(err)
+	httpCode := statusCodeFromErrorCode(errorCode)
+	message := resolveErrorMessage(errorCode, err)
+	if httpCode == http.StatusBadRequest {
+		route := c.FullPath()
+		if route == "" {
+			route = "unknown"
+		}
+		validationRejections.WithLabelValues(route, strconv.Itoa(errorCode)).Inc()
+	}
+	c.JSON(httpCode, errorEnvelope(httpCode, errorCode, message, sources))
 }
 
 func getEventsSchedule(c *gin.Context) (endpointResult, error) {

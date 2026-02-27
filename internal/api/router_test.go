@@ -123,15 +123,20 @@ func TestRouterOutfitBinary(t *testing.T) {
 	defer fs.Close()
 
 	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
-	rec := performRequest(router, http.MethodGet, "/v1/outfit?looktype=131")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "image/png") {
-		t.Fatalf("expected content-type image/png, got %q", ct)
-	}
-	if rec.Body.Len() == 0 {
-		t.Fatal("expected non-empty binary body")
+	for _, path := range []string{
+		"/v1/outfit?looktype=131",
+		"/v1/outfit/Terah",
+	} {
+		rec := performRequest(router, http.MethodGet, path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("path %q: expected status %d, got %d: %s", path, http.StatusOK, rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "image/png") {
+			t.Fatalf("path %q: expected content-type image/png, got %q", path, ct)
+		}
+		if rec.Body.Len() == 0 {
+			t.Fatalf("path %q: expected non-empty binary body", path)
+		}
 	}
 }
 
@@ -221,6 +226,7 @@ func TestRouterValidationErrors(t *testing.T) {
 	}{
 		{path: "/v1/world/Nope", code: http.StatusBadRequest, error: validation.ErrorWorldDoesNotExist},
 		{path: "/v1/character/a", code: http.StatusBadRequest, error: validation.ErrorCharacterNameTooShort},
+		{path: "/v1/outfit/a", code: http.StatusBadRequest, error: validation.ErrorCharacterNameTooShort},
 		{path: "/v1/highscores/Belaria/unknown/all/1", code: http.StatusBadRequest, error: validation.ErrorHighscoreCategoryDoesNotExist},
 		{path: "/v1/transfers?page=0", code: http.StatusBadRequest, error: validation.ErrorPageOutOfBounds},
 	}

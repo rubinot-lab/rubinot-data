@@ -45,6 +45,7 @@ const openAPISpec = `{
     "/v1/maintenance": {"get":{"summary":"Maintenance status","tags":["v1"],"responses":{"200":{"description":"Maintenance info"}}}},
     "/v1/geo-language": {"get":{"summary":"Geo language detection","tags":["v1"],"responses":{"200":{"description":"Geo language"}}}},
     "/v1/outfit": {"get":{"summary":"Outfit image proxy","tags":["v1"],"responses":{"200":{"description":"PNG image"}}}},
+    "/v1/outfit/{name}": {"get":{"summary":"Outfit image by character name","tags":["v1"],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"PNG image"}}}},
     "/v1/events/schedule": {"get":{"summary":"Events schedule","tags":["v1","events"],"responses":{"200":{"description":"Event schedule"}}}},
     "/v1/events/calendar": {"get":{"summary":"Events calendar JSON","tags":["v1","events"],"responses":{"200":{"description":"Event calendar"}}}},
     "/v1/auctions/current/all/details": {"get":{"summary":"Current auctions details (all pages)","tags":["v1","auctions"],"responses":{"200":{"description":"All current auction details"}}}},
