@@ -840,12 +840,12 @@ func getOutfitByCharacterName(c *gin.Context) {
 	}
 
 	query := url.Values{}
-	query.Set("looktype", strconv.Itoa(character.CharacterInfo.Outfit.LookType))
-	query.Set("lookhead", strconv.Itoa(character.CharacterInfo.Outfit.LookHead))
-	query.Set("lookbody", strconv.Itoa(character.CharacterInfo.Outfit.LookBody))
-	query.Set("looklegs", strconv.Itoa(character.CharacterInfo.Outfit.LookLegs))
-	query.Set("lookfeet", strconv.Itoa(character.CharacterInfo.Outfit.LookFeet))
-	query.Set("lookaddons", strconv.Itoa(character.CharacterInfo.Outfit.LookAddons))
+	query.Set("type", strconv.Itoa(character.CharacterInfo.Outfit.LookType))
+	query.Set("head", strconv.Itoa(character.CharacterInfo.Outfit.LookHead))
+	query.Set("body", strconv.Itoa(character.CharacterInfo.Outfit.LookBody))
+	query.Set("legs", strconv.Itoa(character.CharacterInfo.Outfit.LookLegs))
+	query.Set("feet", strconv.Itoa(character.CharacterInfo.Outfit.LookFeet))
+	query.Set("addons", strconv.Itoa(character.CharacterInfo.Outfit.LookAddons))
 
 	body, contentType, outfitSourceURL, err := scraper.FetchOutfitImage(c.Request.Context(), resolvedBaseURL, query.Encode(), resolvedOpts)
 	if err != nil {

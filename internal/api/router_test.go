@@ -137,6 +137,13 @@ func TestRouterOutfitBinary(t *testing.T) {
 		if rec.Body.Len() == 0 {
 			t.Fatalf("path %q: expected non-empty binary body", path)
 		}
+		sourceURL := rec.Header().Get("X-Source-Url")
+		if !strings.Contains(sourceURL, "/api/outfit?") {
+			t.Fatalf("path %q: expected X-Source-Url pointing to /api/outfit, got %q", path, sourceURL)
+		}
+		if !strings.Contains(sourceURL, "type=") {
+			t.Fatalf("path %q: expected normalized type query in X-Source-Url, got %q", path, sourceURL)
+		}
 	}
 }
 

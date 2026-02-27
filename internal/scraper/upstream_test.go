@@ -157,7 +157,7 @@ func TestFetchOutfitImageFromAPI(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte{0x89, 0x50, 0x4E, 0x47})
 
 	cdpSrv := newMockCDPServer(t, func(path string) string {
-		if !strings.HasPrefix(path, "/api/outfit?looktype=131") {
+		if !strings.HasPrefix(path, "/api/outfit?") || !strings.Contains(path, "type=131") || !strings.Contains(path, "head=0") {
 			return "{}"
 		}
 		return fmt.Sprintf(`{"status":200,"contentType":"image/png","bodyBase64":"%s"}`, encoded)
@@ -173,7 +173,7 @@ func TestFetchOutfitImageFromAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
-	if sourceURL != "https://rubinot.com.br/api/outfit?looktype=131&lookhead=0&lookbody=0&looklegs=0&lookfeet=0&lookaddons=0" {
+	if sourceURL != "https://rubinot.com.br/api/outfit?addons=0&animated=1&body=0&direction=3&feet=0&head=0&legs=0&size=0&type=131&walk=1" {
 		t.Fatalf("unexpected source URL: %s", sourceURL)
 	}
 	if contentType != "image/png" {
@@ -181,5 +181,30 @@ func TestFetchOutfitImageFromAPI(t *testing.T) {
 	}
 	if len(body) != 4 || body[0] != 0x89 {
 		t.Fatalf("unexpected binary body: %v", body)
+	}
+}
+
+func TestFetchOutfitImageFromAPITypeQueryPassThrough(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte{0x89, 0x50, 0x4E, 0x47})
+
+	cdpSrv := newMockCDPServer(t, func(path string) string {
+		if !strings.HasPrefix(path, "/api/outfit?") || !strings.Contains(path, "type=2675") || !strings.Contains(path, "addons=3") {
+			return "{}"
+		}
+		return fmt.Sprintf(`{"status":200,"contentType":"image/png","bodyBase64":"%s"}`, encoded)
+	})
+	defer cdpSrv.Close()
+
+	_, _, sourceURL, err := FetchOutfitImage(
+		context.Background(),
+		"https://rubinot.com.br",
+		"type=2675&head=50&body=52&legs=14&feet=52&addons=3",
+		testFetchOptionsWithCDP("", cdpSrv.URL),
+	)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if sourceURL != "https://rubinot.com.br/api/outfit?addons=3&animated=1&body=52&direction=3&feet=52&head=50&legs=14&size=0&type=2675&walk=1" {
+		t.Fatalf("unexpected source URL: %s", sourceURL)
 	}
 }

@@ -3,6 +3,7 @@ package scraper
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -188,9 +189,10 @@ func FetchOutfitImage(ctx context.Context, baseURL, rawQuery string, opts FetchO
 	ctx, span := tracer.Start(ctx, "scraper.FetchOutfitImage")
 	defer span.End()
 
+	normalizedQuery := normalizeOutfitQuery(rawQuery)
 	sourceURL := fmt.Sprintf("%s/api/outfit", strings.TrimRight(baseURL, "/"))
-	if strings.TrimSpace(rawQuery) != "" {
-		sourceURL += "?" + rawQuery
+	if normalizedQuery != "" {
+		sourceURL += "?" + normalizedQuery
 	}
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "outfit"),
@@ -208,6 +210,51 @@ func FetchOutfitImage(ctx context.Context, baseURL, rawQuery string, opts FetchO
 	scrapeRequests.WithLabelValues("outfit", "ok").Inc()
 	ParseItems.WithLabelValues("outfit").Set(float64(len(body)))
 	return body, contentType, sourceURL, nil
+}
+
+func normalizeOutfitQuery(rawQuery string) string {
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return strings.TrimSpace(rawQuery)
+	}
+
+	setFirstAvailable := func(target string, keys ...string) {
+		for _, key := range keys {
+			if v := strings.TrimSpace(values.Get(key)); v != "" {
+				values.Set(target, v)
+				return
+			}
+		}
+	}
+
+	setFirstAvailable("type", "type", "looktype")
+	setFirstAvailable("head", "head", "lookhead")
+	setFirstAvailable("body", "body", "lookbody")
+	setFirstAvailable("legs", "legs", "looklegs")
+	setFirstAvailable("feet", "feet", "lookfeet")
+	setFirstAvailable("addons", "addons", "lookaddons")
+
+	if strings.TrimSpace(values.Get("direction")) == "" {
+		values.Set("direction", "3")
+	}
+	if strings.TrimSpace(values.Get("animated")) == "" {
+		values.Set("animated", "1")
+	}
+	if strings.TrimSpace(values.Get("walk")) == "" {
+		values.Set("walk", "1")
+	}
+	if strings.TrimSpace(values.Get("size")) == "" {
+		values.Set("size", "0")
+	}
+
+	values.Del("looktype")
+	values.Del("lookhead")
+	values.Del("lookbody")
+	values.Del("looklegs")
+	values.Del("lookfeet")
+	values.Del("lookaddons")
+
+	return values.Encode()
 }
 
 func mapEventsCalendarEvents(events []eventsCalendarAPIEvent) []domain.EventsCalendarEvent {
