@@ -25,3 +25,15 @@ type WorldResult struct {
 	Info          WorldInfo      `json:"info"`
 	PlayersOnline []PlayerOnline `json:"players_online"`
 }
+
+type WorldDetailsResult struct {
+	Name       string            `json:"name"`
+	Info       WorldInfo         `json:"info"`
+	Characters []CharacterResult `json:"characters"`
+}
+
+type WorldDashboardResult struct {
+	World          WorldResult          `json:"world"`
+	RecentDeaths   DeathsResult         `json:"recent_deaths"`
+	KillStatistics KillstatisticsResult `json:"kill_statistics"`
+}
