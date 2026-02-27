@@ -10,9 +10,9 @@ import (
 )
 
 type HighscoreCategory struct {
-	ID   int
-	Name string
-	Slug string
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
 }
 
 type HighscoreVocation struct {
@@ -178,64 +178,81 @@ func (v *Validator) loadHighscores() {
 }
 
 var highscoreCategories = []HighscoreCategory{
-	{ID: 17, Name: "Achievements", Slug: "achievements"},
-	{ID: 18, Name: "Battle Pass", Slug: "battle-pass"},
-	{ID: 22, Name: "Bounty Points", Slug: "bounty"},
-	{ID: 2, Name: "Axe Fighting", Slug: "axe"},
-	{ID: 4, Name: "Club Fighting", Slug: "club"},
-	{ID: 19, Name: "Charm Points", Slug: "charm"},
-	{ID: 5, Name: "Distance Fighting", Slug: "distance"},
-	{ID: 14, Name: "Drome Score", Slug: "drome"},
-	{ID: 15, Name: "Linked Tasks", Slug: "linked-tasks"},
-	{ID: 6, Name: "Experience Points", Slug: "experience"},
-	{ID: 16, Name: "Daily Experience (raw)", Slug: "daily-xp"},
-	{ID: 7, Name: "Fishing", Slug: "fishing"},
-	{ID: 8, Name: "Fist Fighting", Slug: "fist"},
-	{ID: 10, Name: "Loyalty Points", Slug: "loyalty"},
-	{ID: 11, Name: "Magic Level", Slug: "magic"},
-	{ID: 20, Name: "Prestige Points", Slug: "prestige"},
-	{ID: 12, Name: "Shielding", Slug: "shielding"},
-	{ID: 13, Name: "Sword Fighting", Slug: "sword"},
-	{ID: 21, Name: "Weekly Tasks", Slug: "weekly-tasks"},
+	{ID: 1, Name: "Experience", Slug: "experience"},
+	{ID: 2, Name: "Magic Level", Slug: "magic"},
+	{ID: 3, Name: "Shielding", Slug: "shielding"},
+	{ID: 4, Name: "Distance", Slug: "distance"},
+	{ID: 5, Name: "Sword", Slug: "sword"},
+	{ID: 6, Name: "Axe", Slug: "axe"},
+	{ID: 7, Name: "Club", Slug: "club"},
+	{ID: 8, Name: "Fist", Slug: "fist"},
+	{ID: 9, Name: "Fishing", Slug: "fishing"},
+	{ID: 10, Name: "Drome Level", Slug: "dromelevel"},
+	{ID: 11, Name: "Linked Tasks", Slug: "linked_tasks"},
+	{ID: 12, Name: "Exp Today", Slug: "exp_today"},
+	{ID: 13, Name: "Achievement Points", Slug: "achievements"},
+	{ID: 14, Name: "Battle Pass", Slug: "battlepass"},
+	{ID: 15, Name: "Charm Unlock Points", Slug: "charmunlockpoints"},
+	{ID: 16, Name: "Prestige Points", Slug: "prestigepoints"},
+	{ID: 17, Name: "Total Weekly Tasks", Slug: "totalweeklytasks"},
+	{ID: 18, Name: "Total Bounty Points", Slug: "totalbountypoints"},
+	{ID: 19, Name: "Charm Total Points", Slug: "charmtotalpoints"},
+	{ID: 20, Name: "Boss Total Points", Slug: "bosstotalpoints"},
 }
 
 var highscoreCategoryAliases = map[string]string{
-	"achievement":       "achievements",
-	"exp":               "experience",
-	"xp":                "experience",
-	"distance-fighting": "distance",
-	"sword-fighting":    "sword",
-	"axe-fighting":      "axe",
-	"club-fighting":     "club",
-	"magic-level":       "magic",
+	"achievement":         "achievements",
+	"achievement_points":  "achievements",
+	"achievementpoints":   "achievements",
+	"exp":                 "experience",
+	"xp":                  "experience",
+	"magiclevel":          "magic",
+	"distance-fighting":   "distance",
+	"dist":                "distance",
+	"sword-fighting":      "sword",
+	"axe-fighting":        "axe",
+	"club-fighting":       "club",
+	"drome":               "dromelevel",
+	"drome_level":         "dromelevel",
+	"linkedtasks":         "linked_tasks",
+	"battle_pass":         "battlepass",
+	"exp_today":           "exp_today",
+	"exptoday":            "exp_today",
+	"charm_unlock_points": "charmunlockpoints",
+	"prestige_points":     "prestigepoints",
+	"prestige":            "prestigepoints",
+	"total_weekly_tasks":  "totalweeklytasks",
+	"total_bounty_points": "totalbountypoints",
+	"charm_total_points":  "charmtotalpoints",
+	"boss_total_points":   "bosstotalpoints",
 }
 
 var highscoreVocations = map[string]int{
 	"(all)":     0,
 	"None":      1,
-	"Knights":   2,
-	"Paladins":  3,
-	"Sorcerers": 4,
-	"Druids":    5,
-	"Monks":     6,
+	"Sorcerers": 2,
+	"Druids":    3,
+	"Paladins":  4,
+	"Knights":   5,
+	"Monks":     9,
 }
 
 var vocationAliases = map[string]string{
 	"all":       "(all)",
 	"(all)":     "(all)",
 	"none":      "None",
-	"knight":    "Knights",
-	"knights":   "Knights",
-	"ek":        "Knights",
-	"paladin":   "Paladins",
-	"paladins":  "Paladins",
-	"rp":        "Paladins",
 	"sorcerer":  "Sorcerers",
 	"sorcerers": "Sorcerers",
 	"ms":        "Sorcerers",
 	"druid":     "Druids",
 	"druids":    "Druids",
 	"ed":        "Druids",
+	"paladin":   "Paladins",
+	"paladins":  "Paladins",
+	"rp":        "Paladins",
+	"knight":    "Knights",
+	"knights":   "Knights",
+	"ek":        "Knights",
 	"monk":      "Monks",
 	"monks":     "Monks",
 }

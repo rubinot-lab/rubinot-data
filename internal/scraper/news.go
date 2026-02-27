@@ -3,22 +3,55 @@ package scraper
 import (
 	"context"
 	"fmt"
-	"regexp"
+	"sort"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
 	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-var (
-	newsArchiveIDPattern  = regexp.MustCompile(`(?i)news/archive/(\d+)`)
-	newsBracketCategoryRe = regexp.MustCompile(`^\[([^\]]+)\]`)
-	newsNotFoundMessageRe = regexp.MustCompile(`(?i)this news doesn't exist or is hidden`)
-	newsRequestNotFoundRe = regexp.MustCompile(`(?i)the requested url .* was not found on this server`)
-)
+type newsAPIResponse struct {
+	Tickers []struct {
+		ID         int    `json:"id"`
+		Message    string `json:"message"`
+		CategoryID int    `json:"category_id"`
+		Category   struct {
+			ID      int    `json:"id"`
+			Name    string `json:"name"`
+			Slug    string `json:"slug"`
+			Color   string `json:"color"`
+			Icon    string `json:"icon"`
+			IconURL string `json:"icon_url"`
+		} `json:"category"`
+		Author    string `json:"author"`
+		CreatedAt string `json:"created_at"`
+	} `json:"tickers"`
+	Articles []struct {
+		ID         int    `json:"id"`
+		Title      string `json:"title"`
+		Slug       string `json:"slug"`
+		Summary    string `json:"summary"`
+		Content    string `json:"content"`
+		CoverImage string `json:"cover_image"`
+		Author     string `json:"author"`
+		Category   struct {
+			ID      int    `json:"id"`
+			Name    string `json:"name"`
+			Slug    string `json:"slug"`
+			Color   string `json:"color"`
+			Icon    string `json:"icon"`
+			IconURL string `json:"icon_url"`
+		} `json:"category"`
+		PublishedAt string `json:"published_at"`
+	} `json:"articles"`
+}
+
+type newsListEntryWithTime struct {
+	entry domain.NewsListEntry
+	time  time.Time
+}
 
 func FetchNewsByID(
 	ctx context.Context,
@@ -29,55 +62,32 @@ func FetchNewsByID(
 	ctx, span := tracer.Start(ctx, "scraper.FetchNewsByID")
 	defer span.End()
 
-	client := NewClient(opts)
-	articleURL := fmt.Sprintf("%s/?news/archive/%d", strings.TrimRight(baseURL, "/"), newsID)
-	tickerURL := fmt.Sprintf("%s/?news", strings.TrimRight(baseURL, "/"))
-
+	sourceURL := fmt.Sprintf("%s/api/news", strings.TrimRight(baseURL, "/"))
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "news"),
+		attribute.String("rubinot.source_url", sourceURL),
 		attribute.Int("rubinot.news_id", newsID),
-		attribute.String("rubinot.source_url", articleURL),
 	)
 
-	started := time.Now()
-	articleHTML, err := client.Fetch(ctx, articleURL)
-	scrapeDuration.WithLabelValues("news").Observe(time.Since(started).Seconds())
+	payload, err := fetchNewsPayload(ctx, sourceURL, opts)
 	if err != nil {
-		scrapeRequests.WithLabelValues("news", "error").Inc()
-		return domain.NewsResult{}, []string{articleURL}, err
+		return domain.NewsResult{}, []string{sourceURL}, err
 	}
-	scrapeRequests.WithLabelValues("news", "ok").Inc()
 
 	parseStarted := time.Now()
-	article, notFound, parseErr := parseNewsArticleHTML(newsID, articleHTML)
+	article, ok := findNewsArticleByID(payload, newsID)
+	if ok {
+		parseDuration.WithLabelValues("news").Observe(time.Since(parseStarted).Seconds())
+		return article, []string{sourceURL}, nil
+	}
+
+	ticker, ok := findNewsTickerByID(payload, newsID)
 	parseDuration.WithLabelValues("news").Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.NewsResult{}, []string{articleURL}, parseErr
-	}
-	if !notFound {
-		return article, []string{articleURL}, nil
+	if ok {
+		return ticker, []string{sourceURL}, nil
 	}
 
-	started = time.Now()
-	tickerHTML, err := client.Fetch(ctx, tickerURL)
-	scrapeDuration.WithLabelValues("news").Observe(time.Since(started).Seconds())
-	if err != nil {
-		scrapeRequests.WithLabelValues("news", "error").Inc()
-		return domain.NewsResult{}, []string{articleURL, tickerURL}, err
-	}
-	scrapeRequests.WithLabelValues("news", "ok").Inc()
-
-	parseStarted = time.Now()
-	tickerEntry, tickerNotFound, parseTickerErr := parseNewsTickerEntryByIndex(newsID, tickerHTML)
-	parseDuration.WithLabelValues("news").Observe(time.Since(parseStarted).Seconds())
-	if parseTickerErr != nil {
-		return domain.NewsResult{}, []string{articleURL, tickerURL}, parseTickerErr
-	}
-	if tickerNotFound {
-		return domain.NewsResult{}, []string{articleURL, tickerURL}, validation.NewError(validation.ErrorEntityNotFound, "news not found", nil)
-	}
-
-	return tickerEntry, []string{tickerURL}, nil
+	return domain.NewsResult{}, []string{sourceURL}, validation.NewError(validation.ErrorEntityNotFound, "news entry not found", nil)
 }
 
 func FetchNewsArchive(
@@ -86,342 +96,232 @@ func FetchNewsArchive(
 	archiveDays int,
 	opts FetchOptions,
 ) (domain.NewsListResult, string, error) {
-	ctx, span := tracer.Start(ctx, "scraper.FetchNewsArchive")
-	defer span.End()
-
-	client := NewClient(opts)
-	sourceURL := fmt.Sprintf("%s/?news/archive", strings.TrimRight(baseURL, "/"))
-	span.SetAttributes(
-		attribute.String("rubinot.endpoint", "news.archive"),
-		attribute.Int("rubinot.archive_days", archiveDays),
-		attribute.String("rubinot.source_url", sourceURL),
-	)
-
-	started := time.Now()
-	htmlBody, err := client.Fetch(ctx, sourceURL)
-	scrapeDuration.WithLabelValues("newslist").Observe(time.Since(started).Seconds())
+	sourceURL := fmt.Sprintf("%s/api/news", strings.TrimRight(baseURL, "/"))
+	payload, err := fetchNewsPayload(ctx, sourceURL, opts)
 	if err != nil {
-		scrapeRequests.WithLabelValues("newslist", "error").Inc()
 		return domain.NewsListResult{}, sourceURL, err
 	}
-	scrapeRequests.WithLabelValues("newslist", "ok").Inc()
 
-	parseStarted := time.Now()
-	result, parseErr := parseNewsArchiveListHTML(htmlBody, archiveDays)
-	parseDuration.WithLabelValues("newslist").Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.NewsListResult{}, sourceURL, parseErr
-	}
-
-	return result, sourceURL, nil
+	cutoff := time.Now().UTC().AddDate(0, 0, -archiveDays)
+	entries := buildNewsArchiveEntries(payload, cutoff)
+	return domain.NewsListResult{
+		Mode:        "archive",
+		ArchiveDays: archiveDays,
+		Entries:     entries,
+	}, sourceURL, nil
 }
 
 func FetchNewsLatest(ctx context.Context, baseURL string, opts FetchOptions) (domain.NewsListResult, string, error) {
-	ctx, span := tracer.Start(ctx, "scraper.FetchNewsLatest")
-	defer span.End()
-
-	client := NewClient(opts)
-	sourceURL := fmt.Sprintf("%s/?news", strings.TrimRight(baseURL, "/"))
-	span.SetAttributes(
-		attribute.String("rubinot.endpoint", "news.latest"),
-		attribute.String("rubinot.source_url", sourceURL),
-	)
-
-	started := time.Now()
-	htmlBody, err := client.Fetch(ctx, sourceURL)
-	scrapeDuration.WithLabelValues("newslist").Observe(time.Since(started).Seconds())
+	sourceURL := fmt.Sprintf("%s/api/news", strings.TrimRight(baseURL, "/"))
+	payload, err := fetchNewsPayload(ctx, sourceURL, opts)
 	if err != nil {
-		scrapeRequests.WithLabelValues("newslist", "error").Inc()
 		return domain.NewsListResult{}, sourceURL, err
 	}
-	scrapeRequests.WithLabelValues("newslist", "ok").Inc()
 
-	parseStarted := time.Now()
-	result, parseErr := parseNewsLatestListHTML(htmlBody)
-	parseDuration.WithLabelValues("newslist").Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.NewsListResult{}, sourceURL, parseErr
+	entries := make([]newsListEntryWithTime, 0, len(payload.Articles))
+	for _, article := range payload.Articles {
+		at := parseNewsTimestamp(article.PublishedAt)
+		entries = append(entries, newsListEntryWithTime{
+			entry: domain.NewsListEntry{
+				ID:          article.ID,
+				Date:        article.PublishedAt,
+				Title:       strings.TrimSpace(article.Title),
+				Category:    strings.TrimSpace(article.Category.Name),
+				Type:        "article",
+				URL:         fmt.Sprintf("/news/%s", strings.TrimSpace(article.Slug)),
+				Author:      strings.TrimSpace(article.Author),
+				Slug:        strings.TrimSpace(article.Slug),
+				Summary:     strings.TrimSpace(article.Summary),
+				CategoryRef: toNewsCategory(article.Category.ID, article.Category.Name, article.Category.Slug, article.Category.Color, article.Category.Icon, article.Category.IconURL),
+			},
+			time: at,
+		})
+	}
+	sortNewsEntries(entries)
+
+	resultEntries := make([]domain.NewsListEntry, 0, len(entries))
+	for _, entry := range entries {
+		resultEntries = append(resultEntries, entry.entry)
 	}
 
-	return result, sourceURL, nil
+	return domain.NewsListResult{
+		Mode:    "latest",
+		Entries: resultEntries,
+	}, sourceURL, nil
 }
 
 func FetchNewsTicker(ctx context.Context, baseURL string, opts FetchOptions) (domain.NewsListResult, string, error) {
-	ctx, span := tracer.Start(ctx, "scraper.FetchNewsTicker")
-	defer span.End()
-
-	client := NewClient(opts)
-	sourceURL := fmt.Sprintf("%s/?news", strings.TrimRight(baseURL, "/"))
-	span.SetAttributes(
-		attribute.String("rubinot.endpoint", "news.newsticker"),
-		attribute.String("rubinot.source_url", sourceURL),
-	)
-
-	started := time.Now()
-	htmlBody, err := client.Fetch(ctx, sourceURL)
-	scrapeDuration.WithLabelValues("newslist").Observe(time.Since(started).Seconds())
+	sourceURL := fmt.Sprintf("%s/api/news", strings.TrimRight(baseURL, "/"))
+	payload, err := fetchNewsPayload(ctx, sourceURL, opts)
 	if err != nil {
-		scrapeRequests.WithLabelValues("newslist", "error").Inc()
 		return domain.NewsListResult{}, sourceURL, err
 	}
-	scrapeRequests.WithLabelValues("newslist", "ok").Inc()
 
-	parseStarted := time.Now()
-	result, parseErr := parseNewsTickerListHTML(htmlBody)
-	parseDuration.WithLabelValues("newslist").Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.NewsListResult{}, sourceURL, parseErr
-	}
-
-	return result, sourceURL, nil
-}
-
-func parseNewsArticleHTML(newsID int, htmlBody string) (domain.NewsResult, bool, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.NewsResult{}, false, err
-	}
-
-	fullText := normalizeText(doc.Text())
-	if newsNotFoundMessageRe.MatchString(fullText) || newsRequestNotFoundRe.MatchString(fullText) {
-		return domain.NewsResult{}, true, nil
-	}
-
-	headline := doc.Find(".NewsHeadline").First()
-	if headline.Length() == 0 {
-		return domain.NewsResult{}, true, nil
-	}
-
-	date := parseNewsDateToUTC(headline.Find(".NewsHeadlineDate").First().Text())
-	title := normalizeText(headline.Find(".NewsHeadlineText").First().Text())
-	category := extractNewsCategory(title)
-
-	contentContainer := headline.NextAllFiltered("table").First().Find("td").First()
-	contentText := normalizeText(contentContainer.Text())
-	contentHTML, _ := contentContainer.Html()
-
-	if title == "" && contentText == "" {
-		return domain.NewsResult{}, true, nil
-	}
-
-	result := domain.NewsResult{
-		ID:          newsID,
-		Date:        date,
-		Title:       title,
-		Category:    category,
-		Type:        "article",
-		Content:     contentText,
-		ContentHTML: strings.TrimSpace(contentHTML),
-	}
-	return result, false, nil
-}
-
-func parseNewsTickerEntryByIndex(newsID int, htmlBody string) (domain.NewsResult, bool, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.NewsResult{}, false, err
-	}
-
-	rows := doc.Find("#NewsTicker .Row")
-	if rows.Length() == 0 {
-		return domain.NewsResult{}, true, nil
-	}
-
-	index := newsID - 1
-	if index < 0 || index >= rows.Length() {
-		return domain.NewsResult{}, true, nil
-	}
-
-	row := rows.Eq(index)
-	date := parseNewsDateToUTC(row.Find(".NewsTickerDate").First().Text())
-
-	fullTextNode := row.Find(".NewsTickerFullText").First()
-	shortTextNode := row.Find(".NewsTickerShortText").First()
-	contentText := normalizeText(fullTextNode.Text())
-	if contentText == "" {
-		contentText = normalizeText(shortTextNode.Text())
-	}
-	contentHTML, _ := fullTextNode.Html()
-	if strings.TrimSpace(contentHTML) == "" {
-		contentHTML, _ = shortTextNode.Html()
-	}
-
-	category := extractNewsCategory(contentText)
-	title := category
-	if title == "" {
-		title = "Ticker Entry"
-	}
-
-	result := domain.NewsResult{
-		ID:          newsID,
-		Date:        date,
-		Title:       title,
-		Category:    category,
-		Type:        "ticker",
-		Content:     contentText,
-		ContentHTML: strings.TrimSpace(contentHTML),
-	}
-	return result, false, nil
-}
-
-func parseNewsArchiveListHTML(htmlBody string, archiveDays int) (domain.NewsListResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.NewsListResult{}, err
-	}
-
-	// TODO: AMBIGUOUS — fixtures do not expose a reliable archive-days query parameter on rubinot upstream.
-	result := domain.NewsListResult{
-		Mode:        "archive",
-		ArchiveDays: archiveDays,
-		Entries:     make([]domain.NewsListEntry, 0),
-	}
-
-	doc.Find("table tr").Each(func(_ int, row *goquery.Selection) {
-		link := row.Find("a[href*='news/archive/']").First()
-		if link.Length() == 0 {
-			return
-		}
-
-		href, _ := link.Attr("href")
-		title := normalizeText(link.Text())
-		if title == "" {
-			return
-		}
-
-		cells := row.Find("td")
-		if cells.Length() < 3 {
-			return
-		}
-
-		date := parseNewsDateToUTC(cells.Eq(1).Text())
-		id := parseNewsArchiveID(href)
-		category := extractNewsCategory(title)
-		if category == "" {
-			category = "news"
-		}
-
-		result.Entries = append(result.Entries, domain.NewsListEntry{
-			ID:       id,
-			Date:     date,
-			Title:    title,
-			Category: category,
-			Type:     "article",
-			URL:      strings.TrimSpace(href),
+	entries := make([]newsListEntryWithTime, 0, len(payload.Tickers))
+	for _, ticker := range payload.Tickers {
+		at := parseNewsTimestamp(ticker.CreatedAt)
+		entries = append(entries, newsListEntryWithTime{
+			entry: domain.NewsListEntry{
+				ID:          ticker.ID,
+				Date:        ticker.CreatedAt,
+				Category:    strings.TrimSpace(ticker.Category.Name),
+				Type:        "ticker",
+				Message:     ticker.Message,
+				Author:      strings.TrimSpace(ticker.Author),
+				CategoryRef: toNewsCategory(ticker.Category.ID, ticker.Category.Name, ticker.Category.Slug, ticker.Category.Color, ticker.Category.Icon, ticker.Category.IconURL),
+			},
+			time: at,
 		})
-	})
+	}
+	sortNewsEntries(entries)
 
-	return result, nil
-}
-
-func parseNewsLatestListHTML(htmlBody string) (domain.NewsListResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.NewsListResult{}, err
+	resultEntries := make([]domain.NewsListEntry, 0, len(entries))
+	for _, entry := range entries {
+		resultEntries = append(resultEntries, entry.entry)
 	}
 
-	result := domain.NewsListResult{
-		Mode:    "latest",
-		Entries: make([]domain.NewsListEntry, 0),
-	}
-
-	doc.Find(".NewsHeadline").Each(func(_ int, headline *goquery.Selection) {
-		title := normalizeText(headline.Find(".NewsHeadlineText").First().Text())
-		if title == "" {
-			return
-		}
-
-		date := parseNewsDateToUTC(headline.Find(".NewsHeadlineDate").First().Text())
-		category := extractNewsCategory(title)
-		if category == "" {
-			category = "news"
-		}
-
-		entry := domain.NewsListEntry{
-			Date:     date,
-			Title:    title,
-			Category: category,
-			Type:     "article",
-		}
-
-		if link := headline.Find("a[href*='news/archive/']").First(); link.Length() > 0 {
-			if href, exists := link.Attr("href"); exists {
-				entry.URL = strings.TrimSpace(href)
-				entry.ID = parseNewsArchiveID(href)
-			}
-		}
-
-		result.Entries = append(result.Entries, entry)
-	})
-
-	return result, nil
-}
-
-func parseNewsTickerListHTML(htmlBody string) (domain.NewsListResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.NewsListResult{}, err
-	}
-
-	result := domain.NewsListResult{
+	return domain.NewsListResult{
 		Mode:    "newsticker",
-		Entries: make([]domain.NewsListEntry, 0),
-	}
-
-	doc.Find("#NewsTicker .Row").Each(func(index int, row *goquery.Selection) {
-		date := parseNewsDateToUTC(row.Find(".NewsTickerDate").First().Text())
-		contentText := normalizeText(row.Find(".NewsTickerFullText").First().Text())
-		if contentText == "" {
-			contentText = normalizeText(row.Find(".NewsTickerShortText").First().Text())
-		}
-		if contentText == "" {
-			return
-		}
-
-		category := extractNewsCategory(contentText)
-		title := category
-		if title == "" {
-			title = "Ticker Entry"
-		}
-
-		result.Entries = append(result.Entries, domain.NewsListEntry{
-			ID:       index + 1,
-			Date:     date,
-			Title:    title,
-			Category: category,
-			Type:     "ticker",
-		})
-	})
-
-	return result, nil
+		Entries: resultEntries,
+	}, sourceURL, nil
 }
 
-func parseNewsDateToUTC(raw string) string {
-	value := strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(raw), "-"))
-	if value == "" {
-		return ""
-	}
+func fetchNewsPayload(ctx context.Context, sourceURL string, opts FetchOptions) (newsAPIResponse, error) {
+	started := time.Now()
+	client := NewClient(opts)
 
-	parsed, err := parseRubinotDateToUTC(value)
+	var payload newsAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
+	scrapeDuration.WithLabelValues("news").Observe(time.Since(started).Seconds())
 	if err != nil {
-		return ""
+		scrapeRequests.WithLabelValues("news", "error").Inc()
+		return newsAPIResponse{}, err
 	}
-	return parsed
+	scrapeRequests.WithLabelValues("news", "ok").Inc()
+	ParseItems.WithLabelValues("news").Set(float64(len(payload.Articles) + len(payload.Tickers)))
+	return payload, nil
 }
 
-func parseNewsArchiveID(urlValue string) int {
-	match := newsArchiveIDPattern.FindStringSubmatch(urlValue)
-	if len(match) != 2 {
-		return 0
+func findNewsArticleByID(payload newsAPIResponse, id int) (domain.NewsResult, bool) {
+	for _, article := range payload.Articles {
+		if article.ID != id {
+			continue
+		}
+		return domain.NewsResult{
+			ID:          article.ID,
+			Date:        article.PublishedAt,
+			Title:       strings.TrimSpace(article.Title),
+			Category:    strings.TrimSpace(article.Category.Name),
+			CategoryRef: toNewsCategory(article.Category.ID, article.Category.Name, article.Category.Slug, article.Category.Color, article.Category.Icon, article.Category.IconURL),
+			Type:        "article",
+			Content:     article.Content,
+			ContentHTML: article.Content,
+			Author:      strings.TrimSpace(article.Author),
+			Slug:        strings.TrimSpace(article.Slug),
+			Summary:     strings.TrimSpace(article.Summary),
+			CoverImage:  strings.TrimSpace(article.CoverImage),
+		}, true
 	}
-	return parseInt(match[1])
+	return domain.NewsResult{}, false
 }
 
-func extractNewsCategory(text string) string {
-	value := normalizeText(text)
-	match := newsBracketCategoryRe.FindStringSubmatch(value)
-	if len(match) == 2 {
-		return strings.TrimSpace(match[1])
+func findNewsTickerByID(payload newsAPIResponse, id int) (domain.NewsResult, bool) {
+	for _, ticker := range payload.Tickers {
+		if ticker.ID != id {
+			continue
+		}
+		return domain.NewsResult{
+			ID:          ticker.ID,
+			Date:        ticker.CreatedAt,
+			Category:    strings.TrimSpace(ticker.Category.Name),
+			CategoryRef: toNewsCategory(ticker.Category.ID, ticker.Category.Name, ticker.Category.Slug, ticker.Category.Color, ticker.Category.Icon, ticker.Category.IconURL),
+			Type:        "ticker",
+			Content:     ticker.Message,
+			ContentHTML: ticker.Message,
+			Author:      strings.TrimSpace(ticker.Author),
+		}, true
 	}
-	return ""
+	return domain.NewsResult{}, false
+}
+
+func buildNewsArchiveEntries(payload newsAPIResponse, cutoff time.Time) []domain.NewsListEntry {
+	entries := make([]newsListEntryWithTime, 0, len(payload.Articles)+len(payload.Tickers))
+
+	for _, article := range payload.Articles {
+		at := parseNewsTimestamp(article.PublishedAt)
+		if !at.IsZero() && at.Before(cutoff) {
+			continue
+		}
+		entries = append(entries, newsListEntryWithTime{
+			entry: domain.NewsListEntry{
+				ID:          article.ID,
+				Date:        article.PublishedAt,
+				Title:       strings.TrimSpace(article.Title),
+				Category:    strings.TrimSpace(article.Category.Name),
+				Type:        "article",
+				URL:         fmt.Sprintf("/news/%s", strings.TrimSpace(article.Slug)),
+				Author:      strings.TrimSpace(article.Author),
+				Slug:        strings.TrimSpace(article.Slug),
+				Summary:     strings.TrimSpace(article.Summary),
+				CategoryRef: toNewsCategory(article.Category.ID, article.Category.Name, article.Category.Slug, article.Category.Color, article.Category.Icon, article.Category.IconURL),
+			},
+			time: at,
+		})
+	}
+
+	for _, ticker := range payload.Tickers {
+		at := parseNewsTimestamp(ticker.CreatedAt)
+		if !at.IsZero() && at.Before(cutoff) {
+			continue
+		}
+		entries = append(entries, newsListEntryWithTime{
+			entry: domain.NewsListEntry{
+				ID:          ticker.ID,
+				Date:        ticker.CreatedAt,
+				Category:    strings.TrimSpace(ticker.Category.Name),
+				Type:        "ticker",
+				Message:     ticker.Message,
+				Author:      strings.TrimSpace(ticker.Author),
+				CategoryRef: toNewsCategory(ticker.Category.ID, ticker.Category.Name, ticker.Category.Slug, ticker.Category.Color, ticker.Category.Icon, ticker.Category.IconURL),
+			},
+			time: at,
+		})
+	}
+
+	sortNewsEntries(entries)
+
+	result := make([]domain.NewsListEntry, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, entry.entry)
+	}
+	return result
+}
+
+func sortNewsEntries(entries []newsListEntryWithTime) {
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].time.After(entries[j].time)
+	})
+}
+
+func parseNewsTimestamp(raw string) time.Time {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return time.Time{}
+	}
+	parsed, err := time.Parse(time.RFC3339, trimmed)
+	if err != nil {
+		return time.Time{}
+	}
+	return parsed.UTC()
+}
+
+func toNewsCategory(id int, name, slug, color, icon, iconURL string) domain.NewsCategory {
+	return domain.NewsCategory{
+		ID:      id,
+		Name:    strings.TrimSpace(name),
+		Slug:    strings.TrimSpace(slug),
+		Color:   strings.TrimSpace(color),
+		Icon:    strings.TrimSpace(icon),
+		IconURL: strings.TrimSpace(iconURL),
+	}
 }

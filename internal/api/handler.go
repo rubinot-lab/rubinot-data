@@ -23,6 +23,7 @@ func handleEndpoint(handler endpointHandler) gin.HandlerFunc {
 		if err != nil {
 			errorCode := resolveErrorCode(err)
 			httpCode := statusCodeFromErrorCode(errorCode)
+			message := resolveErrorMessage(errorCode, err)
 			if httpCode == http.StatusBadRequest {
 				route := c.FullPath()
 				if route == "" {
@@ -30,7 +31,7 @@ func handleEndpoint(handler endpointHandler) gin.HandlerFunc {
 				}
 				validationRejections.WithLabelValues(route, strconv.Itoa(errorCode)).Inc()
 			}
-			c.JSON(httpCode, errorEnvelope(httpCode, errorCode, err.Error(), result.Sources))
+			c.JSON(httpCode, errorEnvelope(httpCode, errorCode, message, result.Sources))
 			return
 		}
 
@@ -51,18 +52,30 @@ func resolveErrorCode(err error) int {
 	return validation.ErrorUpstreamUnknown
 }
 
+func resolveErrorMessage(code int, err error) string {
+	if code == validation.ErrorUpstreamMaintenanceMode {
+		return validation.UpstreamMaintenanceMessage
+	}
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 func statusCodeFromErrorCode(code int) int {
 	switch {
 	case (code >= 10001 && code <= 10007) ||
 		(code >= 11001 && code <= 11008) ||
 		(code >= 14001 && code <= 14007) ||
-		(code >= 30001 && code <= 30010):
+		(code >= 30001 && code <= 30008):
 		return http.StatusBadRequest
 	}
 
 	switch code {
 	case validation.ErrorEntityNotFound:
 		return http.StatusNotFound
+	case validation.ErrorEndpointDeprecated:
+		return http.StatusGone
 	case validation.ErrorUpstreamMaintenanceMode:
 		return http.StatusServiceUnavailable
 	case validation.ErrorFlareSolverrTimeout:

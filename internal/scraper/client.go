@@ -2,11 +2,14 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +30,7 @@ const (
 type FetchOptions struct {
 	FlareSolverrURL string
 	MaxTimeoutMs    int
+	CDPURL          string
 }
 
 type Client struct {
@@ -34,30 +38,50 @@ type Client struct {
 	flareSolverrURL string
 	maxTimeoutMs    int
 	semaphore       chan struct{}
+	cdpURL          string
 }
 
 type flareSolverrRequest struct {
 	Cmd        string            `json:"cmd"`
-	URL        string            `json:"url"`
+	URL        string            `json:"url,omitempty"`
+	Session    string            `json:"session,omitempty"`
 	MaxTimeout int               `json:"maxTimeout,omitempty"`
 	Headers    map[string]string `json:"headers,omitempty"`
+}
+
+type flareSolverrCookie struct {
+	Name    string  `json:"name"`
+	Value   string  `json:"value"`
+	Domain  string  `json:"domain"`
+	Path    string  `json:"path"`
+	Expires float64 `json:"expires"`
 }
 
 type flareSolverrResponse struct {
 	Status   string `json:"status"`
 	Message  string `json:"message"`
 	Solution struct {
-		Response string `json:"response"`
-		Status   int    `json:"status"`
-		URL      string `json:"url"`
+		Response  string               `json:"response"`
+		Status    int                  `json:"status"`
+		URL       string               `json:"url"`
+		Cookies   []flareSolverrCookie `json:"cookies"`
+		UserAgent string               `json:"userAgent"`
 	} `json:"solution"`
 }
+
+const cdpSessionName = "rubinot-cdp"
 
 var (
 	scrapeSemaphoreOnce sync.Once
 	scrapeSemaphore     chan struct{}
 	sharedHTTPOnce      sync.Once
 	sharedHTTPClient    *resty.Client
+	htmlTagPattern      = regexp.MustCompile(`<[^>]+>`)
+	maintenancePattern  = regexp.MustCompile(`(?is)server\s+is\s+under\s+maintenance,\s*please\s+visit\s+later\.?`)
+
+	globalCDPMu    sync.Mutex
+	globalCDP      *CDPClient
+	globalCDPReady bool
 )
 
 func sharedRestyClient() *resty.Client {
@@ -74,6 +98,7 @@ func NewClient(opts FetchOptions) *Client {
 		flareSolverrURL: normalized.FlareSolverrURL,
 		maxTimeoutMs:    normalized.MaxTimeoutMs,
 		semaphore:       sharedScrapeSemaphore(),
+		cdpURL:          normalized.CDPURL,
 	}
 }
 
@@ -134,11 +159,11 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 	UpstreamStatus.WithLabelValues(endpointFromURL(sourceURL), strconv.Itoa(out.Solution.Status)).Inc()
 
 	switch out.Solution.Status {
-	case http.StatusOK:
+	case http.StatusOK, http.StatusNotFound:
 	case http.StatusServiceUnavailable:
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		UpstreamMaintenance.Inc()
-		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, fmt.Sprintf("target returned maintenance status via flaresolverr: %d", out.Solution.Status), nil)
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
 	case http.StatusForbidden:
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		return "", validation.NewError(validation.ErrorUpstreamForbidden, fmt.Sprintf("target returned forbidden status via flaresolverr: %d", out.Solution.Status), nil)
@@ -147,26 +172,214 @@ func (c *Client) Fetch(ctx context.Context, sourceURL string) (string, error) {
 		return "", validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("target returned non-200 via flaresolverr: %d", out.Solution.Status), nil)
 	}
 
-	html := out.Solution.Response
-	lowerHTML := strings.ToLower(html)
-	if strings.Contains(lowerHTML, "just a moment") || strings.Contains(lowerHTML, "cf-browser-verification") {
+	body := out.Solution.Response
+	if isMaintenanceURL(out.Solution.URL) {
+		FlareSolverrRequests.WithLabelValues("ok").Inc()
+		UpstreamMaintenance.Inc()
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+	}
+
+	lowerBody := strings.ToLower(body)
+	if strings.Contains(lowerBody, "just a moment") || strings.Contains(lowerBody, "cf-browser-verification") {
 		FlareSolverrRequests.WithLabelValues("cf_challenge").Inc()
 		CloudflareChallenges.Inc()
 		return "", validation.NewError(validation.ErrorCloudflareChallengePresent, "cloudflare challenge page still present after flaresolverr", nil)
 	}
-	if strings.Contains(lowerHTML, "maintenance") {
+	if containsMaintenanceMessage(body) {
 		FlareSolverrRequests.WithLabelValues("ok").Inc()
 		UpstreamMaintenance.Inc()
-		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, "upstream maintenance mode detected", nil)
+		return "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
 	}
 
 	FlareSolverrRequests.WithLabelValues("ok").Inc()
-	return html, nil
+	return body, nil
+}
+
+func (c *Client) ensureCDP(ctx context.Context) (*CDPClient, error) {
+	if c.cdpURL == "" {
+		return nil, nil
+	}
+
+	globalCDPMu.Lock()
+	defer globalCDPMu.Unlock()
+
+	if globalCDPReady && globalCDP != nil && globalCDP.IsConnected() && globalCDP.baseURL == c.cdpURL {
+		return globalCDP, nil
+	}
+
+	if globalCDP != nil {
+		globalCDP.Close()
+		globalCDP = nil
+		globalCDPReady = false
+	}
+
+	if c.flareSolverrURL != "" {
+		if err := c.initFlareSolverrSession(ctx); err != nil {
+			return nil, err
+		}
+	}
+
+	cdp := NewCDPClient(c.cdpURL)
+	if err := cdp.Connect(ctx); err != nil {
+		return nil, fmt.Errorf("connect CDP: %w", err)
+	}
+
+	globalCDP = cdp
+	globalCDPReady = true
+	return cdp, nil
+}
+
+func (c *Client) initFlareSolverrSession(ctx context.Context) error {
+	type sessionReq struct {
+		Cmd     string `json:"cmd"`
+		Session string `json:"session,omitempty"`
+	}
+
+	const maxRetries = 10
+	var lastErr error
+	for attempt := range maxRetries {
+		_, err := c.httpClient.R().
+			SetContext(ctx).
+			SetHeader("Content-Type", "application/json").
+			SetBody(sessionReq{Cmd: "sessions.create", Session: cdpSessionName}).
+			Post(c.flareSolverrURL)
+		if err != nil {
+			lastErr = err
+			backoff := time.Duration(attempt+1) * 3 * time.Second
+			time.Sleep(backoff)
+			continue
+		}
+
+		var fsResp flareSolverrResponse
+		_, err = c.httpClient.R().
+			SetContext(ctx).
+			SetHeader("Content-Type", "application/json").
+			SetBody(flareSolverrRequest{
+				Cmd:        "request.get",
+				URL:        strings.TrimRight(os.Getenv("RUBINOT_BASE_URL"), "/") + "/",
+				MaxTimeout: c.maxTimeoutMs,
+				Session:    cdpSessionName,
+			}).
+			SetResult(&fsResp).
+			Post(c.flareSolverrURL)
+		if err != nil {
+			lastErr = err
+			backoff := time.Duration(attempt+1) * 3 * time.Second
+			time.Sleep(backoff)
+			continue
+		}
+
+		return nil
+	}
+	return fmt.Errorf("FlareSolverr init failed after %d retries: %w", maxRetries, lastErr)
+}
+
+func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error {
+	ctx, span := tracer.Start(ctx, "scraper.Client.FetchJSON")
+	defer span.End()
+
+	body, err := c.fetchJSONBody(ctx, apiURL)
+	if err != nil {
+		return err
+	}
+
+	return parseJSONBody(body, result)
+}
+
+func (c *Client) fetchJSONBody(ctx context.Context, apiURL string) (string, error) {
+	cdp, err := c.ensureCDP(ctx)
+	if err != nil {
+		return "", validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP init failed: %v", err), err)
+	}
+	if cdp == nil {
+		return "", validation.NewError(validation.ErrorFlareSolverrConnection, "CDP_URL not configured; JSON API requires CDP", nil)
+	}
+
+	return c.fetchViaCDP(ctx, cdp, apiURL)
+}
+
+func (c *Client) fetchViaCDP(ctx context.Context, cdp *CDPClient, apiURL string) (string, error) {
+	parsed, err := url.Parse(apiURL)
+	if err != nil {
+		return "", fmt.Errorf("parse API URL: %w", err)
+	}
+	fetchPath := parsed.Path
+	if parsed.RawQuery != "" {
+		fetchPath += "?" + parsed.RawQuery
+	}
+
+	started := time.Now()
+	body, err := cdp.Fetch(ctx, fetchPath)
+	CDPFetchDuration.Observe(time.Since(started).Seconds())
+
+	if err != nil {
+		CDPFetchRequests.WithLabelValues("error").Inc()
+		globalCDPMu.Lock()
+		globalCDPReady = false
+		globalCDPMu.Unlock()
+		return "", validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP fetch failed: %v", err), err)
+	}
+
+	CDPFetchRequests.WithLabelValues("ok").Inc()
+	UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), "200").Inc()
+	return body, nil
+}
+
+func parseJSONBody(body string, result any) error {
+	var errResp struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal([]byte(body), &errResp) == nil && strings.TrimSpace(errResp.Error) != "" {
+		lower := strings.ToLower(errResp.Error)
+		switch {
+		case strings.Contains(lower, "maintenance"):
+			UpstreamMaintenance.Inc()
+			return validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+		case strings.Contains(lower, "not found"):
+			return validation.NewError(validation.ErrorEntityNotFound, errResp.Error, nil)
+		case strings.Contains(lower, "access denied"):
+			return validation.NewError(validation.ErrorUpstreamForbidden, "API access denied", nil)
+		default:
+			return validation.NewError(validation.ErrorUpstreamUnknown, errResp.Error, nil)
+		}
+	}
+
+	if err := json.Unmarshal([]byte(body), result); err != nil {
+		return validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to decode JSON: %v", err), err)
+	}
+
+	return nil
 }
 
 func endpointFromURL(sourceURL string) string {
 	lower := strings.ToLower(sourceURL)
 	switch {
+	case strings.Contains(lower, "/api/worlds/"):
+		return "world"
+	case strings.Contains(lower, "/api/worlds"):
+		return "worlds"
+	case strings.Contains(lower, "/api/characters"):
+		return "character"
+	case strings.Contains(lower, "/api/guilds/"):
+		return "guild"
+	case strings.Contains(lower, "/api/guilds"):
+		return "guilds"
+	case strings.Contains(lower, "/api/highscores"):
+		return "highscores"
+	case strings.Contains(lower, "/api/killstats"):
+		return "killstatistics"
+	case strings.Contains(lower, "/api/deaths"):
+		return "deaths"
+	case strings.Contains(lower, "/api/transfers"):
+		return "transfers"
+	case strings.Contains(lower, "/api/bans"):
+		return "banishments"
+	case strings.Contains(lower, "/api/events"):
+		return "events"
+	case strings.Contains(lower, "/api/news"):
+		return "news"
+	case strings.Contains(lower, "/api/bazaar"):
+		return "auctions"
 	case strings.Contains(lower, "subtopic=worlds") && !strings.Contains(lower, "world="):
 		return "worlds"
 	case strings.Contains(lower, "subtopic=worlds") && strings.Contains(lower, "world="):
@@ -203,11 +416,14 @@ func endpointFromURL(sourceURL string) string {
 }
 
 func normalizeFetchOptions(opts FetchOptions) FetchOptions {
-	if opts.FlareSolverrURL == "" {
+	if opts.FlareSolverrURL == "" && opts.CDPURL == "" {
 		opts.FlareSolverrURL = defaultFlareSolverrURL
 	}
 	if opts.MaxTimeoutMs <= 0 {
 		opts.MaxTimeoutMs = defaultMaxTimeoutMs
+	}
+	if opts.CDPURL == "" {
+		opts.CDPURL = os.Getenv("CDP_URL")
 	}
 	return opts
 }
@@ -258,6 +474,25 @@ func isTimeoutText(text string) bool {
 	return strings.Contains(lower, "timeout") || strings.Contains(lower, "deadline exceeded")
 }
 
+func containsMaintenanceMessage(html string) bool {
+	if maintenancePattern.MatchString(html) {
+		return true
+	}
+
+	withoutTags := htmlTagPattern.ReplaceAllString(html, " ")
+	return maintenancePattern.MatchString(withoutTags)
+}
+
+func isMaintenanceURL(rawURL string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+
+	path := strings.ToLower(strings.TrimRight(parsed.Path, "/"))
+	return path == "/maintenance"
+}
+
 func envInt(key string, fallback int) int {
 	raw := strings.TrimSpace(os.Getenv(key))
 	if raw == "" {
@@ -275,4 +510,8 @@ func resetSharedScrapeSemaphoreForTests() {
 	scrapeSemaphoreOnce = sync.Once{}
 	sharedHTTPClient = nil
 	sharedHTTPOnce = sync.Once{}
+	globalCDPMu.Lock()
+	globalCDP = nil
+	globalCDPReady = false
+	globalCDPMu.Unlock()
 }

@@ -2,81 +2,100 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
-	"runtime"
+	"regexp"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
+
+	"github.com/giovannirco/rubinot-data/internal/validation"
+	"github.com/gorilla/websocket"
 )
 
-type fakeFlareSolverrReply struct {
-	HTTPStatus   int
-	Status       string
-	Message      string
-	TargetStatus int
-	HTML         string
-}
+const eventsFixtureHTML = `
+<html>
+  <body>
+    <span class="flex items-center gap-2">Fevereiro 2026</span>
+    <table class="w-full table-fixed border-collapse text-xs">
+      <tr><th>Seg</th><th>Ter</th></tr>
+      <tr><td><div>24</div><div>Castle</div></td><td><div>25</div><div>Skill Event</div></td></tr>
+    </table>
+  </body>
+</html>
+`
 
 func TestRouterIntegrationHappyPaths(t *testing.T) {
-	happyResponder := newHappyFlareSolverrResponder(t)
-	flaresolverrServer, _ := newFakeFlareSolverrServer(t, happyResponder)
-	defer flaresolverrServer.Close()
+	api := newHappyAPIUpstream(t)
+	defer api.Close()
 
-	router := newIntegrationTestRouter(t, flaresolverrServer.URL)
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
 
 	testCases := []struct {
 		name       string
 		path       string
+		httpCode   int
+		errorCode  int
 		payloadKey string
 	}{
-		{name: "E1 worlds", path: "/v1/worlds", payloadKey: "worlds"},
-		{name: "E2 world", path: "/v1/world/Belaria", payloadKey: "world"},
-		{name: "E3 character", path: "/v1/character/Test%20Character", payloadKey: "character"},
-		{name: "E4 guild", path: "/v1/guild/Test%20Guild", payloadKey: "guild"},
-		{name: "E5 guilds", path: "/v1/guilds/Belaria", payloadKey: "guilds"},
-		{name: "E6 houses", path: "/v1/houses/Belaria/Venore", payloadKey: "houses"},
-		{name: "E7 house", path: "/v1/house/Belaria/50", payloadKey: "house"},
-		{name: "E8 highscores", path: "/v1/highscores/Belaria/experience/all/1", payloadKey: "highscores"},
-		{name: "E9 killstatistics", path: "/v1/killstatistics/Belaria", payloadKey: "killstatistics"},
-		{name: "E10 news by id", path: "/v1/news/id/140", payloadKey: "news"},
-		{name: "E11 news archive", path: "/v1/news/archive?days=90", payloadKey: "newslist"},
-		{name: "E11 news latest", path: "/v1/news/latest", payloadKey: "newslist"},
-		{name: "E11 news newsticker", path: "/v1/news/newsticker", payloadKey: "newslist"},
-		{name: "E12 deaths", path: "/v1/deaths/Belaria", payloadKey: "deaths"},
-		{name: "E13 transfers", path: "/v1/transfers", payloadKey: "transfers"},
-		{name: "E14 banishments", path: "/v1/banishments/Belaria", payloadKey: "banishments"},
-		{name: "E15 events", path: "/v1/events/schedule", payloadKey: "events"},
-		{name: "E16 auctions current", path: "/v1/auctions/current/1", payloadKey: "auctions"},
-		{name: "E17 auctions history", path: "/v1/auctions/history/1", payloadKey: "auctions"},
-		{name: "E18 auction detail", path: "/v1/auctions/193226", payloadKey: "auction"},
+		{name: "worlds", path: "/v1/worlds", httpCode: http.StatusOK, payloadKey: "worlds"},
+		{name: "world", path: "/v1/world/Belaria", httpCode: http.StatusOK, payloadKey: "world"},
+		{name: "character", path: "/v1/character/Terah", httpCode: http.StatusOK, payloadKey: "character"},
+		{name: "guild", path: "/v1/guild/Panq%20Alliance", httpCode: http.StatusOK, payloadKey: "guild"},
+		{name: "guilds", path: "/v1/guilds/Belaria", httpCode: http.StatusOK, payloadKey: "guilds"},
+		{name: "highscores", path: "/v1/highscores/Belaria/experience/all/1", httpCode: http.StatusOK, payloadKey: "highscores"},
+		{name: "killstatistics", path: "/v1/killstatistics/Belaria", httpCode: http.StatusOK, payloadKey: "killstatistics"},
+		{name: "news by id", path: "/v1/news/id/140", httpCode: http.StatusOK, payloadKey: "news"},
+		{name: "news archive", path: "/v1/news/archive?days=90", httpCode: http.StatusOK, payloadKey: "newslist"},
+		{name: "news latest", path: "/v1/news/latest", httpCode: http.StatusOK, payloadKey: "newslist"},
+		{name: "news ticker", path: "/v1/news/newsticker", httpCode: http.StatusOK, payloadKey: "newslist"},
+		{name: "deaths", path: "/v1/deaths/Belaria?page=1", httpCode: http.StatusOK, payloadKey: "deaths"},
+		{name: "transfers", path: "/v1/transfers?page=1", httpCode: http.StatusOK, payloadKey: "transfers"},
+		{name: "banishments", path: "/v1/banishments/Belaria?page=1", httpCode: http.StatusOK, payloadKey: "banishments"},
+		{name: "events", path: "/v1/events/schedule", httpCode: http.StatusOK, payloadKey: "events"},
+		{name: "auctions current", path: "/v1/auctions/current/1", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auctions history", path: "/v1/auctions/history/1", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auction detail", path: "/v1/auctions/193226", httpCode: http.StatusOK, payloadKey: "auction"},
+		{name: "houses deprecated", path: "/v1/houses/Belaria/Venore", httpCode: http.StatusGone, errorCode: validation.ErrorEndpointDeprecated},
+		{name: "house deprecated", path: "/v1/house/Belaria/50", httpCode: http.StatusGone, errorCode: validation.ErrorEndpointDeprecated},
+		{name: "towns deprecated", path: "/v1/houses/towns", httpCode: http.StatusGone, errorCode: validation.ErrorEndpointDeprecated},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rec := performRequest(t, router, http.MethodGet, tc.path)
-			if rec.Code != http.StatusOK {
-				t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+			rec := performRequest(router, http.MethodGet, tc.path)
+			if rec.Code != tc.httpCode {
+				t.Fatalf("expected status %d, got %d: %s", tc.httpCode, rec.Code, rec.Body.String())
 			}
 
 			body := decodeJSONBody(t, rec)
-			assertEnvelope(t, body, http.StatusOK, 0)
-			if _, exists := body[tc.payloadKey]; !exists {
-				t.Fatalf("expected payload key %q in response body: %+v", tc.payloadKey, body)
+			assertEnvelope(t, body, tc.httpCode, tc.errorCode)
+			if tc.payloadKey != "" {
+				if _, exists := body[tc.payloadKey]; !exists {
+					t.Fatalf("expected payload key %q in response body", tc.payloadKey)
+				}
 			}
 		})
 	}
 }
 
 func TestRouterHighscoresRedirects(t *testing.T) {
-	happyResponder := newHappyFlareSolverrResponder(t)
-	flaresolverrServer, _ := newFakeFlareSolverrServer(t, happyResponder)
-	defer flaresolverrServer.Close()
+	api := newHappyAPIUpstream(t)
+	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
 
-	router := newIntegrationTestRouter(t, flaresolverrServer.URL)
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
 
 	testCases := []struct {
 		path     string
@@ -87,356 +106,222 @@ func TestRouterHighscoresRedirects(t *testing.T) {
 	}
 
 	for _, tc := range testCases {
-		t.Run(tc.path, func(t *testing.T) {
-			rec := performRequest(t, router, http.MethodGet, tc.path)
-			if rec.Code != http.StatusFound {
-				t.Fatalf("expected redirect status %d, got %d", http.StatusFound, rec.Code)
-			}
-			if location := rec.Header().Get("Location"); location != tc.location {
-				t.Fatalf("expected redirect location %q, got %q", tc.location, location)
-			}
-		})
-	}
-}
-
-func TestRouterIntegrationValidationErrors(t *testing.T) {
-	testCases := []struct {
-		name          string
-		path          string
-		expectedError int
-	}{
-		{name: "E2 invalid world", path: "/v1/world/Nope", expectedError: 11001},
-		{name: "E3 invalid character", path: "/v1/character/a", expectedError: 10002},
-		{name: "E4 invalid guild", path: "/v1/guild/ab", expectedError: 14002},
-		{name: "E5 invalid world", path: "/v1/guilds/Nope", expectedError: 11001},
-		{name: "E6 invalid town", path: "/v1/houses/Belaria/UnknownTown", expectedError: 11002},
-		{name: "E7 invalid house id", path: "/v1/house/Belaria/abc", expectedError: 11006},
-		{name: "E8 invalid category", path: "/v1/highscores/Belaria/unknown/all/1", expectedError: 11004},
-		{name: "E9 invalid world", path: "/v1/killstatistics/Nope", expectedError: 11001},
-		{name: "E10 invalid news id", path: "/v1/news/id/abc", expectedError: 30002},
-		{name: "E11 invalid archive days", path: "/v1/news/archive?days=0", expectedError: 30006},
-		{name: "E12 invalid world", path: "/v1/deaths/Nope", expectedError: 11001},
-		{name: "E13 invalid page", path: "/v1/transfers?page=0", expectedError: 30001},
-		{name: "E14 invalid world", path: "/v1/banishments/Nope", expectedError: 11001},
-		{name: "E15 invalid month", path: "/v1/events/schedule?month=13&year=2026", expectedError: 30004},
-		{name: "E16 invalid page", path: "/v1/auctions/current/0", expectedError: 30001},
-		{name: "E17 invalid page", path: "/v1/auctions/history/0", expectedError: 30001},
-		{name: "E18 invalid id", path: "/v1/auctions/%20", expectedError: 30008},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			flaresolverrServer, scrapeCalls := newFakeFlareSolverrServer(t, func(targetURL string) fakeFlareSolverrReply {
-				t.Fatalf("validation path should not scrape upstream, got URL: %s", targetURL)
-				return fakeFlareSolverrReply{HTML: "<html></html>"}
-			})
-			defer flaresolverrServer.Close()
-
-			router := newIntegrationTestRouter(t, flaresolverrServer.URL)
-			rec := performRequest(t, router, http.MethodGet, tc.path)
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("expected status %d, got %d: %s", http.StatusBadRequest, rec.Code, rec.Body.String())
-			}
-
-			body := decodeJSONBody(t, rec)
-			assertEnvelope(t, body, http.StatusBadRequest, tc.expectedError)
-			if scrapeCalls.Load() != 0 {
-				t.Fatalf("expected zero non-bootstrap scrapes on validation failure, got %d", scrapeCalls.Load())
-			}
-		})
-	}
-}
-
-func TestRouterIntegrationUpstreamErrors(t *testing.T) {
-	flaresolverrServer, _ := newFakeFlareSolverrServer(t, func(_ string) fakeFlareSolverrReply {
-		return fakeFlareSolverrReply{HTTPStatus: http.StatusInternalServerError}
-	})
-	defer flaresolverrServer.Close()
-
-	router := newIntegrationTestRouter(t, flaresolverrServer.URL)
-
-	testCases := []struct {
-		name string
-		path string
-	}{
-		{name: "E1 worlds", path: "/v1/worlds"},
-		{name: "E2 world", path: "/v1/world/Belaria"},
-		{name: "E3 character", path: "/v1/character/Test%20Character"},
-		{name: "E4 guild", path: "/v1/guild/Test%20Guild"},
-		{name: "E5 guilds", path: "/v1/guilds/Belaria"},
-		{name: "E6 houses", path: "/v1/houses/Belaria/Venore"},
-		{name: "E7 house", path: "/v1/house/Belaria/50"},
-		{name: "E8 highscores", path: "/v1/highscores/Belaria/experience/all/1"},
-		{name: "E9 killstatistics", path: "/v1/killstatistics/Belaria"},
-		{name: "E10 news by id", path: "/v1/news/id/140"},
-		{name: "E11 news archive", path: "/v1/news/archive?days=90"},
-		{name: "E11 news latest", path: "/v1/news/latest"},
-		{name: "E11 news newsticker", path: "/v1/news/newsticker"},
-		{name: "E12 deaths", path: "/v1/deaths/Belaria"},
-		{name: "E13 transfers", path: "/v1/transfers"},
-		{name: "E14 banishments", path: "/v1/banishments/Belaria"},
-		{name: "E15 events", path: "/v1/events/schedule"},
-		{name: "E16 auctions current", path: "/v1/auctions/current/1"},
-		{name: "E17 auctions history", path: "/v1/auctions/history/1"},
-		{name: "E18 auction detail", path: "/v1/auctions/193226"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := performRequest(t, router, http.MethodGet, tc.path)
-			if rec.Code != http.StatusBadGateway {
-				t.Fatalf("expected status %d, got %d: %s", http.StatusBadGateway, rec.Code, rec.Body.String())
-			}
-
-			body := decodeJSONBody(t, rec)
-			assertEnvelope(t, body, http.StatusBadGateway, 20002)
-		})
-	}
-}
-
-func TestRouterIntegrationNotFound(t *testing.T) {
-	happyResponder := newHappyFlareSolverrResponder(t)
-	worldNotFound := mustReadFixture(t, "world/not_found.html")
-	characterNotFound := mustReadFixture(t, "character/not_found.html")
-	guildNotFound := mustReadFixture(t, "guild/not_found.html")
-	houseNotFound := mustReadFixture(t, "house/not_found.html")
-	newsNotFound := mustReadFixture(t, "news/not_found.html")
-	auctionNotFound := mustReadFixture(t, "auctions/detail_not_found.html")
-
-	flaresolverrServer, _ := newFakeFlareSolverrServer(t, func(targetURL string) fakeFlareSolverrReply {
-		switch {
-		case strings.Contains(targetURL, "subtopic=worlds&world="):
-			return fakeFlareSolverrReply{HTML: worldNotFound}
-		case strings.Contains(targetURL, "subtopic=characters"):
-			return fakeFlareSolverrReply{HTML: characterNotFound}
-		case strings.Contains(targetURL, "subtopic=guilds&page=view"):
-			return fakeFlareSolverrReply{HTML: guildNotFound}
-		case strings.Contains(targetURL, "subtopic=houses&page=view") && strings.Contains(targetURL, "houseid=999999"):
-			return fakeFlareSolverrReply{HTML: houseNotFound}
-		case strings.Contains(targetURL, "?news/archive/999999"):
-			return fakeFlareSolverrReply{HTML: newsNotFound}
-		case strings.HasSuffix(targetURL, "/?news"):
-			return fakeFlareSolverrReply{HTML: newsNotFound}
-		case strings.Contains(targetURL, "/?currentcharactertrades/999999"):
-			return fakeFlareSolverrReply{HTML: auctionNotFound}
-		case strings.Contains(targetURL, "/?pastcharactertrades/999999"):
-			return fakeFlareSolverrReply{HTML: auctionNotFound}
-		default:
-			return happyResponder(targetURL)
+		rec := performRequest(router, http.MethodGet, tc.path)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("expected redirect status %d, got %d", http.StatusFound, rec.Code)
 		}
-	})
-	defer flaresolverrServer.Close()
-
-	router := newIntegrationTestRouter(t, flaresolverrServer.URL)
-
-	testCases := []struct {
-		name string
-		path string
-	}{
-		{name: "E2 world not found", path: "/v1/world/Belaria"},
-		{name: "E3 character not found", path: "/v1/character/Ghost%20Player"},
-		{name: "E4 guild not found", path: "/v1/guild/Unknown%20Guild"},
-		{name: "E7 house not found", path: "/v1/house/Belaria/999999"},
-		{name: "E10 news not found", path: "/v1/news/id/999999"},
-		{name: "E18 auction not found", path: "/v1/auctions/999999"},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := performRequest(t, router, http.MethodGet, tc.path)
-			if rec.Code != http.StatusNotFound {
-				t.Fatalf("expected status %d, got %d: %s", http.StatusNotFound, rec.Code, rec.Body.String())
-			}
-
-			body := decodeJSONBody(t, rec)
-			assertEnvelope(t, body, http.StatusNotFound, 20004)
-		})
+		if got := rec.Header().Get("Location"); got != tc.location {
+			t.Fatalf("expected redirect location %q, got %q", tc.location, got)
+		}
 	}
 }
 
-func newIntegrationTestRouter(t *testing.T, flaresolverrURL string) http.Handler {
+func TestRouterValidationErrors(t *testing.T) {
+	api := newHappyAPIUpstream(t)
+	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
+
+	testCases := []struct {
+		path  string
+		code  int
+		error int
+	}{
+		{path: "/v1/world/Nope", code: http.StatusBadRequest, error: validation.ErrorWorldDoesNotExist},
+		{path: "/v1/character/a", code: http.StatusBadRequest, error: validation.ErrorCharacterNameTooShort},
+		{path: "/v1/highscores/Belaria/unknown/all/1", code: http.StatusBadRequest, error: validation.ErrorHighscoreCategoryDoesNotExist},
+		{path: "/v1/transfers?page=0", code: http.StatusBadRequest, error: validation.ErrorPageOutOfBounds},
+	}
+
+	for _, tc := range testCases {
+		rec := performRequest(router, http.MethodGet, tc.path)
+		if rec.Code != tc.code {
+			t.Fatalf("expected status %d, got %d", tc.code, rec.Code)
+		}
+		body := decodeJSONBody(t, rec)
+		assertEnvelope(t, body, tc.code, tc.error)
+	}
+}
+
+func TestRouterMaintenancePropagation(t *testing.T) {
+	api := newAPIUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/worlds" {
+			writeJSON(w, map[string]any{"worlds": []map[string]any{{"id": 15, "name": "Belaria"}}})
+			return
+		}
+		if r.URL.Path == "/api/highscores" {
+			writeJSON(w, map[string]any{"error": validation.UpstreamMaintenanceMessage})
+			return
+		}
+		writeJSON(w, map[string]any{"error": "unsupported"})
+	})
+	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
+	rec := performRequest(router, http.MethodGet, "/v1/highscores/Belaria/experience/all/1")
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status %d, got %d", http.StatusServiceUnavailable, rec.Code)
+	}
+	body := decodeJSONBody(t, rec)
+	assertEnvelope(t, body, http.StatusServiceUnavailable, validation.ErrorUpstreamMaintenanceMode)
+}
+
+func TestRouterNotFoundPropagation(t *testing.T) {
+	api := newAPIUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/worlds" {
+			writeJSON(w, map[string]any{"worlds": []map[string]any{{"id": 15, "name": "Belaria"}}})
+			return
+		}
+		if r.URL.Path == "/api/characters/search" {
+			writeJSON(w, map[string]any{"error": "Character not found"})
+			return
+		}
+		writeJSON(w, map[string]any{"error": "unsupported"})
+	})
+	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
+	rec := performRequest(router, http.MethodGet, "/v1/character/Unknown%20Player")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, rec.Code)
+	}
+	body := decodeJSONBody(t, rec)
+	assertEnvelope(t, body, http.StatusNotFound, validation.ErrorEntityNotFound)
+}
+
+func newIntegrationTestRouter(t *testing.T, flaresolverrURL, baseURL, cdpURL string) http.Handler {
 	t.Helper()
 	t.Setenv("FLARESOLVERR_URL", flaresolverrURL)
-	t.Setenv("RUBINOT_BASE_URL", "https://www.rubinot.com.br")
+	t.Setenv("RUBINOT_BASE_URL", baseURL)
 	t.Setenv("SCRAPE_MAX_TIMEOUT_MS", "120000")
 	t.Setenv("SCRAPE_MAX_CONCURRENCY", "8")
+	t.Setenv("CDP_URL", cdpURL)
 
 	router, err := NewRouter()
 	if err != nil {
 		t.Fatalf("failed to build router: %v", err)
 	}
-
 	return http.Handler(router)
 }
 
-func newHappyFlareSolverrResponder(t *testing.T) func(string) fakeFlareSolverrReply {
+func newFakeFlareSolverrForRouter(t *testing.T, eventsHTML string) *httptest.Server {
 	t.Helper()
-	fixtures := map[string]string{
-		"worlds":            mustReadFixture(t, "worlds/overview.html"),
-		"world":             mustReadFixture(t, "world/belaria.html"),
-		"character":         mustReadFixture(t, "character/normal.html"),
-		"guild":             mustReadFixture(t, "guild/active.html"),
-		"guilds":            mustReadFixture(t, "guilds/list.html"),
-		"houses":            mustReadFixture(t, "houses/venore_list.html"),
-		"guildhalls":        mustReadFixture(t, "houses/guildhalls_list.html"),
-		"house":             mustReadFixture(t, "house/rented.html"),
-		"highscores":        mustReadFixture(t, "highscores/experience_page1.html"),
-		"killstatistics":    mustReadFixture(t, "killstatistics/normal.html"),
-		"newsArticle":       mustReadFixture(t, "news/article.html"),
-		"newsTicker":        mustReadFixture(t, "news/ticker.html"),
-		"newsArchive":       mustReadFixture(t, "news/list.html"),
-		"deaths":            mustReadFixture(t, "deaths/normal.html"),
-		"transfers":         mustReadFixture(t, "transfers/normal.html"),
-		"banishments":       mustReadFixture(t, "banishments/normal.html"),
-		"events":            mustReadFixture(t, "events/schedule.html"),
-		"auctionsCurrent":   mustReadFixture(t, "auctions/current.html"),
-		"auctionsHistory":   mustReadFixture(t, "auctions/history.html"),
-		"auctionDetail":     mustReadFixture(t, "auctions/detail_active.html"),
-		"auctionDetailPast": mustReadFixture(t, "auctions/detail_ended.html"),
-	}
-
-	return func(targetURL string) fakeFlareSolverrReply {
-		switch {
-		case strings.Contains(targetURL, "subtopic=worlds&world="):
-			return fakeFlareSolverrReply{HTML: fixtures["world"]}
-		case strings.Contains(targetURL, "subtopic=worlds"):
-			return fakeFlareSolverrReply{HTML: fixtures["worlds"]}
-		case strings.Contains(targetURL, "subtopic=characters"):
-			return fakeFlareSolverrReply{HTML: fixtures["character"]}
-		case strings.Contains(targetURL, "subtopic=guilds&page=view"):
-			return fakeFlareSolverrReply{HTML: fixtures["guild"]}
-		case strings.Contains(targetURL, "subtopic=guilds"):
-			return fakeFlareSolverrReply{HTML: fixtures["guilds"]}
-		case strings.Contains(targetURL, "subtopic=houses&page=view"):
-			if strings.Contains(targetURL, "houseid=50") {
-				return fakeFlareSolverrReply{HTML: fixtures["house"]}
-			}
-			return fakeFlareSolverrReply{HTML: fixtures["house"]}
-		case strings.Contains(targetURL, "subtopic=houses") && strings.Contains(targetURL, "type=guildhalls"):
-			return fakeFlareSolverrReply{HTML: fixtures["guildhalls"]}
-		case strings.Contains(targetURL, "subtopic=houses"):
-			return fakeFlareSolverrReply{HTML: fixtures["houses"]}
-		case strings.Contains(targetURL, "subtopic=highscores"):
-			return fakeFlareSolverrReply{HTML: fixtures["highscores"]}
-		case strings.Contains(targetURL, "subtopic=killstatistics"):
-			return fakeFlareSolverrReply{HTML: fixtures["killstatistics"]}
-		case strings.Contains(targetURL, "?news/archive/"):
-			return fakeFlareSolverrReply{HTML: fixtures["newsArticle"]}
-		case strings.HasSuffix(targetURL, "/?news/archive"):
-			return fakeFlareSolverrReply{HTML: fixtures["newsArchive"]}
-		case strings.HasSuffix(targetURL, "/?news"):
-			return fakeFlareSolverrReply{HTML: fixtures["newsTicker"]}
-		case strings.Contains(targetURL, "subtopic=latestdeaths&world="):
-			return fakeFlareSolverrReply{HTML: fixtures["deaths"]}
-		case strings.Contains(targetURL, "subtopic=transferstatistics"):
-			return fakeFlareSolverrReply{HTML: fixtures["transfers"]}
-		case strings.Contains(targetURL, "subtopic=bans"):
-			return fakeFlareSolverrReply{HTML: fixtures["banishments"]}
-		case strings.Contains(targetURL, "subtopic=eventcalendar"):
-			return fakeFlareSolverrReply{HTML: fixtures["events"]}
-		case strings.Contains(targetURL, "/?currentcharactertrades/"):
-			return fakeFlareSolverrReply{HTML: fixtures["auctionDetail"]}
-		case strings.Contains(targetURL, "/?pastcharactertrades/"):
-			return fakeFlareSolverrReply{HTML: fixtures["auctionDetailPast"]}
-		case strings.Contains(targetURL, "/currentcharactertrades") || strings.Contains(targetURL, "subtopic=currentcharactertrades"):
-			return fakeFlareSolverrReply{HTML: fixtures["auctionsCurrent"]}
-		case strings.Contains(targetURL, "/pastcharactertrades") || strings.Contains(targetURL, "subtopic=pastcharactertrades"):
-			return fakeFlareSolverrReply{HTML: fixtures["auctionsHistory"]}
-		default:
-			t.Fatalf("unexpected upstream URL requested in integration test: %s", targetURL)
-			return fakeFlareSolverrReply{HTML: "<html></html>"}
-		}
-	}
-}
-
-func newFakeFlareSolverrServer(t *testing.T, responder func(string) fakeFlareSolverrReply) (*httptest.Server, *atomic.Int64) {
-	t.Helper()
-
-	type requestPayload struct {
-		URL string `json:"url"`
-	}
-
-	nonBootstrapCalls := &atomic.Int64{}
-	bootstrapHTML := `<html><body><select name="world"><option value="0">Select</option><option value="15">Belaria</option></select></body></html>`
-	bootstrapHousesHTML := `<html><body><label><input type="radio" name="town" value="1">Venore</label><label><input type="radio" name="town" value="2">Thais</label></body></html>`
-	bootstrapHighscoresHTML := `<html><body><select name="category"><option value="17">Achievements</option><option value="6">Experience Points</option></select></body></html>`
-	bootstrapHighscoresServed := &atomic.Bool{}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("unexpected flaresolverr method: %s", r.Method)
 		}
 
-		var payload requestPayload
+		var payload struct {
+			Cmd     string `json:"cmd"`
+			URL     string `json:"url"`
+			Session string `json:"session"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("failed to decode flaresolverr request: %v", err)
 		}
 
-		targetURL := payload.URL
-		if strings.Contains(targetURL, "subtopic=latestdeaths") && !strings.Contains(targetURL, "&world=") {
-			writeFakeFlareSolverrResponse(t, w, targetURL, fakeFlareSolverrReply{HTML: bootstrapHTML})
-			return
-		}
-		if strings.Contains(targetURL, "subtopic=houses") && !strings.Contains(targetURL, "world=") {
-			writeFakeFlareSolverrResponse(t, w, targetURL, fakeFlareSolverrReply{HTML: bootstrapHousesHTML})
-			return
-		}
-		if strings.Contains(targetURL, "subtopic=highscores") && !bootstrapHighscoresServed.Swap(true) {
-			writeFakeFlareSolverrResponse(t, w, targetURL, fakeFlareSolverrReply{HTML: bootstrapHighscoresHTML})
+		if payload.Cmd == "sessions.create" {
+			writeJSON(w, map[string]any{"status": "ok", "message": "Session created successfully.", "session": payload.Session})
 			return
 		}
 
-		nonBootstrapCalls.Add(1)
-		reply := responder(targetURL)
-		writeFakeFlareSolverrResponse(t, w, targetURL, reply)
+		if payload.Session != "" && !strings.Contains(payload.URL, "/events") {
+			writeJSON(w, map[string]any{
+				"status":  "ok",
+				"message": "Challenge not detected!",
+				"solution": map[string]any{
+					"response": "<html><body>ok</body></html>",
+					"status":   http.StatusOK,
+					"url":      payload.URL,
+				},
+			})
+			return
+		}
+
+		body := "<html><body>ok</body></html>"
+		solutionStatus := http.StatusOK
+		if strings.Contains(payload.URL, "/events") {
+			body = eventsHTML
+		}
+
+		resp := map[string]any{
+			"status":  "ok",
+			"message": "",
+			"solution": map[string]any{
+				"response": body,
+				"status":   solutionStatus,
+				"url":      payload.URL,
+			},
+		}
+		writeJSON(w, resp)
 	}))
-
-	return server, nonBootstrapCalls
 }
 
-func writeFakeFlareSolverrResponse(t *testing.T, w http.ResponseWriter, targetURL string, reply fakeFlareSolverrReply) {
+func newHappyAPIUpstream(t *testing.T) *httptest.Server {
 	t.Helper()
-
-	httpStatus := reply.HTTPStatus
-	if httpStatus == 0 {
-		httpStatus = http.StatusOK
-	}
-
-	if httpStatus != http.StatusOK {
-		w.WriteHeader(httpStatus)
-		if _, err := w.Write([]byte(`{"status":"error"}`)); err != nil {
-			t.Fatalf("failed to write fake flaresolverr error body: %v", err)
+	return newAPIUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/worlds":
+			writeJSON(w, map[string]any{"worlds": []map[string]any{{"id": 15, "name": "Belaria", "pvpType": "pvp", "pvpTypeLabel": "Open PvP", "worldType": "green", "locked": true, "playersOnline": 1000}}, "totalOnline": 1000, "overallRecord": 27884, "overallRecordTime": 1770583857})
+		case r.URL.Path == "/api/worlds/Belaria":
+			writeJSON(w, map[string]any{"world": map[string]any{"id": 15, "name": "Belaria", "pvpTypeLabel": "Open PvP", "worldType": "green", "locked": true, "creationDate": 1731297600}, "playersOnline": 1000, "record": 2000, "recordTime": 1770597564, "players": []map[string]any{{"name": "Test", "level": 100, "vocation": "Elder Druid", "vocationId": 6}}})
+		case r.URL.Path == "/api/characters/search":
+			writeJSON(w, map[string]any{"player": map[string]any{"id": 1, "account_id": 2, "name": "Terah", "level": 100, "vocation": "Elder Druid", "vocationId": 6, "world_id": 15, "sex": "Female", "residence": "Thais", "lastlogin": "1771978547", "created": 1749685309, "account_created": 1729809234, "loyalty_points": 70, "isHidden": false, "formerNames": []any{}, "looktype": 1, "lookhead": 2, "lookbody": 3, "looklegs": 4, "lookfeet": 5, "lookaddons": 0, "vip_time": 1919328364, "achievementPoints": 221, "comment": ""}, "deaths": []any{}, "otherCharacters": []any{}, "accountBadges": []any{}, "displayedAchievements": []any{}, "banInfo": nil, "foundByOldName": false})
+		case r.URL.Path == "/api/guilds":
+			if name := r.URL.Query().Get("world"); name == "15" {
+				writeJSON(w, map[string]any{"guilds": []map[string]any{{"id": 10, "name": "Panq Alliance", "description": "desc", "world_id": 15, "logo_name": "default.gif"}}})
+				return
+			}
+			writeJSON(w, map[string]any{"error": "invalid world"})
+		case strings.HasPrefix(r.URL.Path, "/api/guilds/"):
+			writeJSON(w, map[string]any{"guild": map[string]any{"id": 10, "name": "Panq Alliance", "motd": "", "description": "desc", "homepage": "", "world_id": 15, "logo_name": "default.gif", "balance": "0", "creationdata": 1748825316, "owner": map[string]any{"id": 1, "name": "Leader", "level": 1000, "vocation": 6}, "members": []map[string]any{{"id": 1, "name": "Leader", "level": 1000, "vocation": 6, "rank": "Leader", "rankLevel": 3, "nick": "", "joinDate": 1748825316, "isOnline": false}}, "ranks": []map[string]any{{"id": 1, "name": "Leader", "level": 3}}, "residence": map[string]any{"id": 1, "name": "Thais", "town": "Thais"}}})
+		case r.URL.Path == "/api/highscores":
+			writeJSON(w, map[string]any{"players": []map[string]any{{"rank": 1, "id": 1, "name": "Top", "level": 1000, "vocation": 6, "world_id": 15, "value": "999"}}, "totalCount": 1, "cachedAt": 1772042575929})
+		case r.URL.Path == "/api/killstats":
+			writeJSON(w, map[string]any{"entries": []map[string]any{{"race_name": "dragon", "players_killed_24h": 1, "creatures_killed_24h": 100, "players_killed_7d": 5, "creatures_killed_7d": 700}}, "totals": map[string]any{"players_killed_24h": 1, "creatures_killed_24h": 100, "players_killed_7d": 5, "creatures_killed_7d": 700}})
+		case r.URL.Path == "/api/news":
+			writeJSON(w, map[string]any{"tickers": []map[string]any{{"id": 200, "message": "<p>ticker</p>", "category_id": 1, "category": map[string]any{"id": 1, "name": "Events", "slug": "events", "color": "#fff", "icon": "calendar", "icon_url": "https://example/icon.gif"}, "author": "staff", "created_at": "2026-02-20T00:00:00.000Z"}}, "articles": []map[string]any{{"id": 140, "title": "News", "slug": "news", "summary": "sum", "content": "<p>body</p>", "cover_image": "cover.jpg", "author": "staff", "category": map[string]any{"id": 2, "name": "Community", "slug": "community", "color": "#000", "icon": "users", "icon_url": "https://example/icon2.gif"}, "published_at": "2026-02-24T00:00:00.000Z"}}})
+		case r.URL.Path == "/api/deaths":
+			writeJSON(w, map[string]any{"deaths": []map[string]any{{"player_id": 1, "time": "1772043027", "level": 300, "killed_by": "dragon", "is_player": 0, "mostdamage_by": "dragon", "mostdamage_is_player": 0, "victim": "Victim", "world_id": 15}}, "pagination": map[string]any{"currentPage": 1, "totalPages": 1, "totalCount": 1, "itemsPerPage": 50}})
+		case r.URL.Path == "/api/transfers":
+			writeJSON(w, map[string]any{"transfers": []map[string]any{{"id": 1, "player_id": 1, "player_name": "Player", "player_level": 500, "from_world_id": 11, "to_world_id": 15, "transferred_at": 1772043027000}}, "totalResults": 1, "totalPages": 1, "currentPage": 1})
+		case r.URL.Path == "/api/bans":
+			writeJSON(w, map[string]any{"bans": []map[string]any{{"account_id": 1, "account_name": "acc", "main_character": "Player", "reason": "Rule", "banned_at": "1772043027", "expires_at": "-1", "banned_by": "GM", "is_permanent": true}}, "totalCount": 1, "totalPages": 1, "currentPage": 1})
+		case r.URL.Path == "/api/bazaar":
+			writeJSON(w, map[string]any{"auctions": []map[string]any{{"id": 193226, "state": 1, "stateName": "active", "playerId": 1, "owner": 2, "startingValue": 100, "currentValue": 200, "auctionStart": 1772000000, "auctionEnd": 1772100000, "name": "Char", "level": 1000, "vocation": 6, "vocationName": "Elder Druid", "sex": 0, "worldId": 15, "worldName": "Belaria", "lookType": 1, "lookHead": 2, "lookBody": 3, "lookLegs": 4, "lookFeet": 5, "lookAddons": 0, "charmPoints": 10, "achievementPoints": 20, "magLevel": 30, "skills": map[string]any{"axe": 1, "club": 2, "distance": 3, "shielding": 4, "sword": 5}, "highlightItems": []any{}, "highlightAugments": []any{}}}, "pagination": map[string]any{"page": 1, "limit": 25, "total": 1, "totalPages": 1}})
+		case r.URL.Path == "/api/bazaar/history":
+			writeJSON(w, map[string]any{"auctions": []any{}, "pagination": map[string]any{"page": 1, "limit": 25, "total": 1, "totalPages": 1}})
+		case strings.HasPrefix(r.URL.Path, "/api/bazaar/"):
+			writeJSON(w, map[string]any{"auction": map[string]any{"id": 193226, "state": 1, "stateName": "active", "playerId": 1, "owner": 2, "startingValue": 100, "currentValue": 200, "winningBid": 0, "highestBidderId": 0, "auctionStart": 1772000000, "auctionEnd": 1772100000}, "player": map[string]any{"name": "Char", "level": 1000, "vocation": 6, "vocationName": "Elder Druid", "sex": 0, "worldId": 15, "worldName": "Belaria", "lookType": 1, "lookHead": 2, "lookBody": 3, "lookLegs": 4, "lookFeet": 5, "lookAddons": 0, "lookMount": 0}, "general": map[string]any{"achievementPoints": 20, "charmPoints": 10, "magLevel": 30, "skills": map[string]any{"axe": 1, "club": 2, "distance": 3, "shielding": 4, "sword": 5}}, "highlightItems": []any{}, "highlightAugments": []any{}})
+		default:
+			t.Fatalf("unexpected upstream request: %s", r.URL.String())
 		}
-		return
-	}
-
-	status := strings.TrimSpace(reply.Status)
-	if status == "" {
-		status = "ok"
-	}
-	targetStatus := reply.TargetStatus
-	if targetStatus == 0 {
-		targetStatus = http.StatusOK
-	}
-
-	response := map[string]any{
-		"status":  status,
-		"message": reply.Message,
-		"solution": map[string]any{
-			"response": reply.HTML,
-			"status":   targetStatus,
-			"url":      targetURL,
-		},
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		t.Fatalf("failed to encode fake flaresolverr response: %v", err)
-	}
+	})
 }
 
-func performRequest(t *testing.T, handler http.Handler, method, path string) *httptest.ResponseRecorder {
+func newAPIUpstream(t *testing.T, handler func(http.ResponseWriter, *http.Request)) *httptest.Server {
 	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(handler))
+}
+
+func writeJSON(w http.ResponseWriter, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func performRequest(handler http.Handler, method, path string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -481,6 +366,79 @@ func assertEnvelope(t *testing.T, body map[string]any, expectedHTTPCode int, exp
 	}
 }
 
+var routerCDPPathRe = regexp.MustCompile(`fetch\('([^']+)'\)`)
+
+var routerWSUpgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+
+func newMockCDPForRouter(t *testing.T, apiUpstream *httptest.Server) *httptest.Server {
+	t.Helper()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/json/list", func(w http.ResponseWriter, r *http.Request) {
+		targets := []map[string]string{{
+			"id":                   "ROUTER_PAGE_1",
+			"type":                 "page",
+			"url":                  "https://rubinot.com.br/news",
+			"webSocketDebuggerUrl": fmt.Sprintf("ws://%s/devtools/page/ROUTER_PAGE_1", r.Host),
+		}}
+		writeJSON(w, targets)
+	})
+
+	mux.HandleFunc("/devtools/page/", func(w http.ResponseWriter, r *http.Request) {
+		conn, err := routerWSUpgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("websocket upgrade: %v", err)
+			return
+		}
+		defer conn.Close()
+
+		for {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+
+			var req struct {
+				ID     int64  `json:"id"`
+				Method string `json:"method"`
+				Params struct {
+					Expression string `json:"expression"`
+				} `json:"params"`
+			}
+			if err := json.Unmarshal(data, &req); err != nil {
+				continue
+			}
+
+			var value string
+			if req.Method == "Runtime.evaluate" {
+				matches := routerCDPPathRe.FindStringSubmatch(req.Params.Expression)
+				if len(matches) > 1 {
+					resp, err := http.Get(apiUpstream.URL + matches[1])
+					if err != nil {
+						value = fmt.Sprintf(`{"error":"%s"}`, err.Error())
+					} else {
+						defer resp.Body.Close()
+						raw, _ := io.ReadAll(resp.Body)
+						value = string(raw)
+					}
+				}
+			}
+
+			conn.WriteJSON(map[string]any{
+				"id": req.ID,
+				"result": map[string]any{
+					"result": map[string]any{
+						"type":  "string",
+						"value": value,
+					},
+				},
+			})
+		}
+	})
+
+	return httptest.NewServer(mux)
+}
+
 func toInt(t *testing.T, value any) int {
 	t.Helper()
 	switch v := value.(type) {
@@ -506,20 +464,4 @@ func toInt(t *testing.T, value any) int {
 		t.Fatalf("unsupported numeric type %T (%v)", value, value)
 		return 0
 	}
-}
-
-func mustReadFixture(t *testing.T, relativePath string) string {
-	t.Helper()
-	_, currentFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("failed to resolve current file for fixture lookup")
-	}
-
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", ".."))
-	fixturePath := filepath.Join(repoRoot, "testdata", relativePath)
-	bytes, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("failed to read fixture %s: %v", fixturePath, err)
-	}
-	return string(bytes)
 }

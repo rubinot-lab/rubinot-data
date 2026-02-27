@@ -4,20 +4,16 @@ import (
 	"context"
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
-	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-var (
-	eventsMonthYearPattern = regexp.MustCompile(`([A-Za-z]+)\s+(\d{4})`)
-)
+var monthYearPattern = regexp.MustCompile(`(?i)([\p{L}]+)\s+(\d{4})`)
 
 func FetchEventsSchedule(
 	ctx context.Context,
@@ -29,14 +25,14 @@ func FetchEventsSchedule(
 	ctx, span := tracer.Start(ctx, "scraper.FetchEventsSchedule")
 	defer span.End()
 
-	sourceURL := buildEventsURL(baseURL, month, year)
+	sourceURL := fmt.Sprintf("%s/events", strings.TrimRight(baseURL, "/"))
 	client := NewClient(opts)
 
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "events"),
+		attribute.String("rubinot.source_url", sourceURL),
 		attribute.Int("rubinot.month", month),
 		attribute.Int("rubinot.year", year),
-		attribute.String("rubinot.source_url", sourceURL),
 	)
 
 	started := time.Now()
@@ -52,18 +48,22 @@ func FetchEventsSchedule(
 	result, parseErr := parseEventsHTML(htmlBody)
 	parseDuration.WithLabelValues("events").Observe(time.Since(parseStarted).Seconds())
 	if parseErr != nil {
+		ParseErrors.WithLabelValues("events", "parse").Inc()
 		return domain.EventsResult{}, sourceURL, parseErr
+	}
+	ParseItems.WithLabelValues("events").Set(float64(len(result.Days)))
+
+	if month > 0 {
+		result.Days = filterCurrentMonthDays(result.Days)
+	}
+	if year > 0 {
+		result.Year = year
+	}
+	if month > 0 {
+		result.Month = strconv.Itoa(month)
 	}
 
 	return result, sourceURL, nil
-}
-
-func buildEventsURL(baseURL string, month int, year int) string {
-	sourceURL := fmt.Sprintf("%s/?subtopic=eventcalendar", strings.TrimRight(baseURL, "/"))
-	if month > 0 && year > 0 {
-		sourceURL += fmt.Sprintf("&calendarmonth=%d&calendaryear=%d", month, year)
-	}
-	return sourceURL
 }
 
 func parseEventsHTML(htmlBody string) (domain.EventsResult, error) {
@@ -77,153 +77,149 @@ func parseEventsHTML(htmlBody string) (domain.EventsResult, error) {
 		AllEvents: make([]string, 0),
 	}
 
-	headerText := normalizeText(doc.Find(".eventscheduleheaderdateblock").First().Text())
-	if match := eventsMonthYearPattern.FindStringSubmatch(headerText); len(match) == 3 {
-		result.Month = match[1]
-		result.Year = parseInt(match[2])
+	monthText := strings.TrimSpace(doc.Find("span.flex.items-center.gap-2").First().Text())
+	if monthText == "" {
+		monthText = strings.TrimSpace(doc.Find("h2, h3").First().Text())
+	}
+	if month, year := parseMonthYear(monthText); year > 0 {
+		result.Month = month
+		result.Year = year
+	} else {
+		now := time.Now().UTC()
+		result.Month = now.Month().String()
+		result.Year = now.Year()
 	}
 
-	lastUpdateRaw := normalizeText(doc.Find(".eventscheduleheaderblockright").First().Text())
-	if parsed, parseErr := parseRubinotEventLastUpdateToUTC(lastUpdateRaw); parseErr == nil {
-		result.LastUpdate = parsed
+	calendar := doc.Find("table.w-full.table-fixed.border-collapse.text-xs")
+	if calendar.Length() == 0 {
+		calendar = doc.Find("table").First()
+	}
+	if calendar.Length() == 0 {
+		return result, nil
 	}
 
-	table := findEventsCalendarTable(doc)
-	if table == nil || table.Length() == 0 {
-		return domain.EventsResult{}, validation.NewError(validation.ErrorUpstreamUnknown, "event calendar table not found", nil)
-	}
-
-	allEventsSet := make(map[string]struct{})
-	table.Find("tr").Slice(1, goquery.ToEnd).Each(func(_ int, row *goquery.Selection) {
+	uniqueEvents := make(map[string]struct{})
+	calendar.Find("tr").Slice(1, goquery.ToEnd).Each(func(_ int, row *goquery.Selection) {
 		row.Find("td").Each(func(_ int, cell *goquery.Selection) {
-			dayEntry, ok := parseEventDayCell(cell)
+			if strings.Contains(cell.AttrOr("class", ""), "calendar-other-month") {
+				return
+			}
+
+			day, ok := parseEventDayCell(cell)
 			if !ok {
 				return
 			}
-			for _, name := range dayEntry.Events {
-				allEventsSet[name] = struct{}{}
+			for _, event := range day.Events {
+				if _, exists := uniqueEvents[event]; exists {
+					continue
+				}
+				uniqueEvents[event] = struct{}{}
+				result.AllEvents = append(result.AllEvents, event)
 			}
-			result.Days = append(result.Days, dayEntry)
+			result.Days = append(result.Days, day)
 		})
 	})
 
-	result.Days = filterCurrentMonthDays(result.Days)
-
-	allEventsSet = make(map[string]struct{})
-	for _, day := range result.Days {
-		for _, name := range day.Events {
-			allEventsSet[name] = struct{}{}
-		}
-	}
-	result.AllEvents = make([]string, 0, len(allEventsSet))
-	for eventName := range allEventsSet {
-		result.AllEvents = append(result.AllEvents, eventName)
-	}
-	sort.Strings(result.AllEvents)
-
+	sortEventDays(result.Days)
 	return result, nil
 }
 
-func filterCurrentMonthDays(days []domain.EventDay) []domain.EventDay {
-	if len(days) <= 1 {
-		return days
+func parseMonthYear(raw string) (string, int) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", 0
 	}
 
-	start := 0
-	end := len(days)
-
-	if days[0].Day > 15 {
-		for i := 1; i < len(days); i++ {
-			if days[i].Day < days[i-1].Day {
-				start = i
-				break
-			}
-		}
+	matches := monthYearPattern.FindStringSubmatch(trimmed)
+	if len(matches) != 3 {
+		return "", 0
 	}
-
-	for i := start + 1; i < len(days); i++ {
-		if days[i].Day < days[i-1].Day {
-			end = i
-			break
-		}
+	year, err := strconv.Atoi(matches[2])
+	if err != nil {
+		return "", 0
 	}
-
-	return days[start:end]
+	return strings.TrimSpace(matches[1]), year
 }
 
-func findEventsCalendarTable(doc *goquery.Document) *goquery.Selection {
-	if table := doc.Find("#eventscheduletable"); table.Length() > 0 {
-		return table.First()
-	}
-
-	var target *goquery.Selection
-	doc.Find("table").EachWithBreak(func(_ int, table *goquery.Selection) bool {
-		header := strings.ToLower(normalizeText(table.Find("tr").First().Text()))
-		if strings.Contains(header, "monday") && strings.Contains(header, "sunday") {
-			target = table
-			return false
+func filterCurrentMonthDays(days []domain.EventDay) []domain.EventDay {
+	filtered := make([]domain.EventDay, 0, len(days))
+	for _, day := range days {
+		if day.Day <= 0 || day.Day > 31 {
+			continue
 		}
-		return true
-	})
-	return target
+		filtered = append(filtered, day)
+	}
+	return filtered
 }
 
 func parseEventDayCell(cell *goquery.Selection) (domain.EventDay, bool) {
-	lines := splitEventCellLines(cell.Text())
-	if len(lines) == 0 {
-		return domain.EventDay{}, false
-	}
-
-	day, err := strconv.Atoi(lines[0])
-	if err != nil || day <= 0 {
-		return domain.EventDay{}, false
-	}
-
 	events := make([]string, 0)
-	activeEvents := make([]string, 0)
-	endingEvents := make([]string, 0)
+	dayValue := 0
 
-	for _, raw := range lines[1:] {
-		if _, err := strconv.Atoi(raw); err == nil {
-			continue
+	divs := cell.Find("div")
+	if divs.Length() > 0 {
+		dayText := strings.TrimSpace(divs.First().Text())
+		parsedDay, err := strconv.Atoi(dayText)
+		if err == nil {
+			dayValue = parsedDay
 		}
+		divs.Slice(1, goquery.ToEnd).Each(func(_ int, div *goquery.Selection) {
+			cleaned := strings.TrimSpace(strings.TrimPrefix(div.Text(), "*"))
+			if cleaned == "" {
+				return
+			}
+			events = append(events, cleaned)
+		})
+	}
 
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" {
-			continue
+	if dayValue == 0 {
+		textLines := splitEventCellLines(cell.Text())
+		if len(textLines) == 0 {
+			return domain.EventDay{}, false
 		}
-
-		isEnding := strings.HasPrefix(trimmed, "*")
-		eventName := strings.TrimSpace(strings.TrimPrefix(trimmed, "*"))
-		if eventName == "" {
-			continue
+		parsedDay, err := strconv.Atoi(textLines[0])
+		if err != nil {
+			return domain.EventDay{}, false
 		}
-
-		events = append(events, eventName)
-		if isEnding {
-			endingEvents = append(endingEvents, eventName)
-		} else {
-			activeEvents = append(activeEvents, eventName)
+		dayValue = parsedDay
+		for _, line := range textLines[1:] {
+			cleaned := strings.TrimSpace(strings.TrimPrefix(line, "*"))
+			if cleaned == "" {
+				continue
+			}
+			events = append(events, cleaned)
 		}
 	}
 
-	if len(events) == 0 {
+	if dayValue <= 0 || dayValue > 31 {
 		return domain.EventDay{}, false
+	}
+
+	unique := make(map[string]struct{})
+	normalizedEvents := make([]string, 0, len(events))
+	for _, event := range events {
+		if _, exists := unique[event]; exists {
+			continue
+		}
+		unique[event] = struct{}{}
+		normalizedEvents = append(normalizedEvents, event)
 	}
 
 	return domain.EventDay{
-		Day:          day,
-		Events:       events,
-		ActiveEvents: activeEvents,
-		EndingEvents: endingEvents,
+		Day:          dayValue,
+		Events:       normalizedEvents,
+		ActiveEvents: normalizedEvents,
+		EndingEvents: make([]string, 0),
 	}, true
 }
 
 func splitEventCellLines(raw string) []string {
-	rawLines := strings.Split(raw, "\n")
-	lines := make([]string, 0, len(rawLines))
-	for _, line := range rawLines {
-		normalized := strings.TrimSpace(line)
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	lines := make([]string, 0, len(parts))
+	for _, part := range parts {
+		normalized := strings.TrimSpace(part)
 		if normalized == "" {
 			continue
 		}
@@ -232,15 +228,12 @@ func splitEventCellLines(raw string) []string {
 	return lines
 }
 
-func parseRubinotEventLastUpdateToUTC(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", nil
+func sortEventDays(days []domain.EventDay) {
+	for i := 0; i < len(days)-1; i++ {
+		for j := i + 1; j < len(days); j++ {
+			if days[j].Day < days[i].Day {
+				days[i], days[j] = days[j], days[i]
+			}
+		}
 	}
-
-	parsed, err := time.ParseInLocation("2006-01-02 15:04", value, rubinotBrazilLocation)
-	if err != nil {
-		return "", err
-	}
-	return parsed.UTC().Format(time.RFC3339), nil
 }

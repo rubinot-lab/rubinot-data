@@ -4,526 +4,281 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
 	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-var (
-	characterTitlePattern     = regexp.MustCompile(`^(.+?)\s*\((\d+)\s+titles\s+unlocked\)$`)
-	characterDeathPattern     = regexp.MustCompile(`(?i)killed\s+at\s+level\s+(\d+)\s+by\s+(.+)$`)
-	characterParentheticalRe  = regexp.MustCompile(`\(([^)]*)\)`)
-	characterHouseIDPattern   = regexp.MustCompile(`(?i)[?&]houseid=(\d+)`)
-	characterGuildRankPattern = regexp.MustCompile(`(?i)^(.+?)\s+of\s+the\s+(.+)$`)
-	characterRowPrefixPattern = regexp.MustCompile(`^\d+\.\s*`)
-)
+type characterAPIResponse struct {
+	Player *struct {
+		ID             int    `json:"id"`
+		AccountID      int    `json:"account_id"`
+		Name           string `json:"name"`
+		Level          int    `json:"level"`
+		Vocation       string `json:"vocation"`
+		VocationID     int    `json:"vocationId"`
+		WorldID        int    `json:"world_id"`
+		Sex            string `json:"sex"`
+		Residence      string `json:"residence"`
+		LastLogin      string `json:"lastlogin"`
+		Created        int64  `json:"created"`
+		Comment        string `json:"comment"`
+		AccountCreated int64  `json:"account_created"`
+		LoyaltyPoints  int    `json:"loyalty_points"`
+		IsHidden       bool   `json:"isHidden"`
+		Guild          *struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+			Rank string `json:"rank"`
+			Nick string `json:"nick"`
+		} `json:"guild"`
+		House *struct {
+			ID     int    `json:"id"`
+			Name   string `json:"name"`
+			TownID int    `json:"town_id"`
+			Rent   int    `json:"rent"`
+			Size   int    `json:"size"`
+		} `json:"house"`
+		Partner           *string  `json:"partner"`
+		FormerNames       []string `json:"formerNames"`
+		Title             *string  `json:"title"`
+		Auction           any      `json:"auction"`
+		LookType          int      `json:"looktype"`
+		LookHead          int      `json:"lookhead"`
+		LookBody          int      `json:"lookbody"`
+		LookLegs          int      `json:"looklegs"`
+		LookFeet          int      `json:"lookfeet"`
+		LookAddons        int      `json:"lookaddons"`
+		VIPTime           int64    `json:"vip_time"`
+		AchievementPoints int      `json:"achievementPoints"`
+	} `json:"player"`
+	Deaths []struct {
+		Time               string `json:"time"`
+		Level              int    `json:"level"`
+		KilledBy           string `json:"killed_by"`
+		IsPlayer           int    `json:"is_player"`
+		MostDamageBy       string `json:"mostdamage_by"`
+		MostDamageIsPlayer int    `json:"mostdamage_is_player"`
+	} `json:"deaths"`
+	OtherCharacters []struct {
+		Name    string `json:"name"`
+		World   string `json:"world"`
+		WorldID int    `json:"world_id"`
+		Status  string `json:"status"`
+		Main    bool   `json:"main"`
+		Traded  bool   `json:"traded"`
+		Deleted bool   `json:"deleted"`
+	} `json:"otherCharacters"`
+	AccountBadges         []map[string]any `json:"accountBadges"`
+	DisplayedAchievements []map[string]any `json:"displayedAchievements"`
+	BanInfo               map[string]any   `json:"banInfo"`
+	IsAdmin               bool             `json:"isAdmin"`
+	CanSeeDeathDetails    bool             `json:"canSeeDeathDetails"`
+	FoundByOldName        bool             `json:"foundByOldName"`
+}
 
 func FetchCharacter(ctx context.Context, baseURL, characterName string, opts FetchOptions) (domain.CharacterResult, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchCharacter")
 	defer span.End()
 
-	started := time.Now()
-	sourceURL := fmt.Sprintf(
-		"%s/?subtopic=characters&name=%s",
-		strings.TrimRight(baseURL, "/"),
-		url.QueryEscape(characterName),
-	)
+	query := url.Values{}
+	query.Set("name", strings.TrimSpace(characterName))
+	sourceURL := fmt.Sprintf("%s/api/characters/search?%s", strings.TrimRight(baseURL, "/"), query.Encode())
 	client := NewClient(opts)
 
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "character"),
-		attribute.String("rubinot.character", characterName),
 		attribute.String("rubinot.source_url", sourceURL),
+		attribute.String("rubinot.character", characterName),
 	)
 
-	htmlBody, err := client.Fetch(ctx, sourceURL)
+	started := time.Now()
+	var payload characterAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
 	scrapeDuration.WithLabelValues("character").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("character", "error").Inc()
 		return domain.CharacterResult{}, sourceURL, err
 	}
+	if payload.Player == nil {
+		scrapeRequests.WithLabelValues("character", "error").Inc()
+		return domain.CharacterResult{}, sourceURL, validation.NewError(validation.ErrorEntityNotFound, "character not found", nil)
+	}
 	scrapeRequests.WithLabelValues("character", "ok").Inc()
 
 	parseStarted := time.Now()
-	result, parseErr := parseCharacterHTML(htmlBody)
+	result := mapCharacterResponse(payload)
 	parseDuration.WithLabelValues("character").Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.CharacterResult{}, sourceURL, parseErr
-	}
+	ParseItems.WithLabelValues("character").Set(float64(len(result.Deaths)))
 
 	return result, sourceURL, nil
 }
 
-func parseCharacterHTML(htmlBody string) (domain.CharacterResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.CharacterResult{}, err
+func mapCharacterResponse(payload characterAPIResponse) domain.CharacterResult {
+	player := payload.Player
+	worldName := worldNameByID(player.WorldID)
+	if worldName == "" {
+		worldName = "Unknown"
 	}
 
-	errorText := normalizeText(doc.Find(".ErrorMessage").First().Text())
-	if isCharacterNotFound(errorText) {
-		return domain.CharacterResult{}, validation.NewError(validation.ErrorEntityNotFound, "character not found", nil)
-	}
-
-	result := domain.CharacterResult{}
-	result.CharacterInfo.IsBanned = isCharacterBanned(errorText)
-	if result.CharacterInfo.IsBanned {
-		result.CharacterInfo.BanReason = errorText
-	}
-
-	characterInfoContainer := findContainerByHeaders(doc, []string{"character information", "informacoes do personagem", "informações do personagem"})
-	if characterInfoContainer != nil {
-		info, parseErr := parseCharacterInfo(characterInfoContainer)
-		if parseErr != nil {
-			return domain.CharacterResult{}, parseErr
-		}
-		result.CharacterInfo = info
-		if !result.CharacterInfo.IsBanned && isCharacterBanned(errorText) {
-			result.CharacterInfo.IsBanned = true
-			result.CharacterInfo.BanReason = errorText
+	var guild *domain.CharacterGuild
+	if player.Guild != nil {
+		guild = &domain.CharacterGuild{
+			ID:   player.Guild.ID,
+			Name: strings.TrimSpace(player.Guild.Name),
+			Rank: strings.TrimSpace(player.Guild.Rank),
+			Nick: strings.TrimSpace(player.Guild.Nick),
 		}
 	}
 
-	deathsContainer := findContainerByHeaders(doc, []string{"character deaths", "mortes"})
-	if deathsContainer != nil {
-		deaths, parseErr := parseCharacterDeaths(deathsContainer)
-		if parseErr != nil {
-			return domain.CharacterResult{}, parseErr
-		}
-		result.Deaths = deaths
-	}
-
-	accountInfoContainer := findContainerByHeaders(doc, []string{"account information", "informacoes da conta", "informações da conta"})
-	if accountInfoContainer != nil {
-		accountInfo, parseErr := parseAccountInformation(accountInfoContainer)
-		if parseErr != nil {
-			return domain.CharacterResult{}, parseErr
-		}
-		if accountInfo.Created != "" || accountInfo.LoyaltyTitle != "" {
-			result.AccountInfo = &accountInfo
+	var house *domain.CharacterHouse
+	if player.House != nil {
+		house = &domain.CharacterHouse{
+			HouseID: player.House.ID,
+			Name:    strings.TrimSpace(player.House.Name),
+			World:   worldName,
+			TownID:  player.House.TownID,
+			Rent:    player.House.Rent,
+			Size:    player.House.Size,
 		}
 	}
 
-	otherCharactersContainer := findContainerByHeaders(doc, []string{"characters", "personagens"})
-	if otherCharactersContainer != nil {
-		result.OtherCharacters = parseOtherCharacters(otherCharactersContainer)
+	outfit := &domain.CharacterOutfit{
+		LookType:   player.LookType,
+		LookHead:   player.LookHead,
+		LookBody:   player.LookBody,
+		LookLegs:   player.LookLegs,
+		LookFeet:   player.LookFeet,
+		LookAddons: player.LookAddons,
 	}
 
-	if strings.TrimSpace(result.CharacterInfo.Name) == "" {
-		if result.CharacterInfo.IsBanned {
-			return result, nil
-		}
-		return domain.CharacterResult{}, validation.NewError(validation.ErrorEntityNotFound, "character not found", nil)
-	}
-
-	return result, nil
-}
-
-func findContainerByHeaders(doc *goquery.Document, expected []string) *goquery.Selection {
-	var found *goquery.Selection
-	doc.Find(".TableContainer").EachWithBreak(func(_ int, container *goquery.Selection) bool {
-		header := strings.ToLower(normalizeText(container.Find(".CaptionContainer .Text").First().Text()))
-		for _, candidate := range expected {
-			if strings.Contains(header, candidate) {
-				found = container
-				return false
-			}
-		}
-		return true
-	})
-	return found
-}
-
-func parseCharacterInfo(container *goquery.Selection) (domain.CharacterInfo, error) {
-	info := domain.CharacterInfo{}
-	var parseErr error
-
-	container.Find(".TableContent tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
-		cells := row.Find("td")
-		if cells.Length() < 2 {
-			return true
-		}
-
-		label := normalizeLabel(cells.Eq(0).Text())
-		valueCell := cells.Eq(1)
-		valueText := normalizeText(valueCell.Text())
-
-		switch strings.ToLower(label) {
-		case "name", "nome":
-			name := strings.TrimSpace(valueCell.Find("b").First().Text())
-			if name == "" {
-				name = strings.TrimSpace(valueText)
-			}
-			info.Name = stripCharacterNameMarkers(name)
-			if strings.Contains(strings.ToLower(valueText), "(traded)") {
-				info.Traded = true
-			}
-			if auctionURL, exists := valueCell.Find("a[href*='currentcharactertrades/']").Attr("href"); exists {
-				info.AuctionURL = strings.TrimSpace(auctionURL)
-			}
-
-		case "former names", "nomes anteriores":
-			info.FormerNames = splitCSV(valueText)
-
-		case "sex", "sexo":
-			info.Sex = valueText
-
-		case "title", "titulo", "título":
-			info.Title, info.UnlockedTitles = parseCharacterTitle(valueText)
-
-		case "vocation", "vocação", "vocacao":
-			info.Vocation = valueText
-
-		case "level", "nível", "nivel":
-			info.Level = parseInt(valueText)
-
-		case "achievement points", "pontos de conquista":
-			info.AchievementPoints = parseInt(valueText)
-
-		case "world", "mundo":
-			info.World = valueText
-
-		case "former worlds", "mundos anteriores":
-			info.FormerWorlds = splitCSV(valueText)
-
-		case "residence", "residência", "residencia":
-			info.Residence = valueText
-
-		case "married to", "casado com", "casada com":
-			info.MarriedTo = valueText
-
-		case "house", "casa":
-			info.Houses = parseCharacterHouses(valueCell)
-
-		case "guild":
-			info.Guild = parseCharacterGuild(valueCell, valueText)
-
-		case "last login", "último login", "ultimo login":
-			lastLogin, dateErr := parseRubinotDateTimeToUTC(valueText)
-			if dateErr != nil {
-				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
-				return false
-			}
-			info.LastLogin = lastLogin
-
-		case "account status", "status da conta":
-			info.AccountStatus = valueText
-
-		case "deletion date", "data de exclusão", "data de exclusao":
-			deletionDate, dateErr := parseRubinotDateTimeToUTC(valueText)
-			if dateErr != nil {
-				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
-				return false
-			}
-			info.DeletionDate = deletionDate
-
-		case "comment", "comentário", "comentario":
-			info.Comment = valueText
-		}
-		return true
-	})
-
-	if parseErr != nil {
-		return domain.CharacterInfo{}, parseErr
-	}
-
-	return info, nil
-}
-
-func parseCharacterDeaths(container *goquery.Selection) ([]domain.CharacterDeath, error) {
-	deaths := make([]domain.CharacterDeath, 0)
-
-	for _, row := range container.Find(".TableContent tr").Slice(0, goquery.ToEnd).Nodes {
-		selection := goquery.NewDocumentFromNode(row).Selection
-		cells := selection.Find("td")
-		if cells.Length() < 2 {
-			continue
-		}
-
-		timeText := normalizeText(cells.Eq(0).Text())
-		deathText := normalizeText(cells.Eq(1).Text())
-		if timeText == "" || deathText == "" {
-			continue
-		}
-
-		timeUTC, err := parseRubinotDateTimeToUTC(timeText)
-		if err != nil {
-			return nil, validation.NewError(validation.ErrorUpstreamUnknown, err.Error(), err)
-		}
-
-		death, ok := parseCharacterDeathText(timeUTC, deathText)
-		if !ok {
-			continue
-		}
-		deaths = append(deaths, death)
-	}
-
-	return deaths, nil
-}
-
-func parseCharacterDeathText(timeUTC, deathText string) (domain.CharacterDeath, bool) {
-	match := characterDeathPattern.FindStringSubmatch(deathText)
-	if len(match) != 3 {
-		return domain.CharacterDeath{}, false
-	}
-
-	level, err := strconv.Atoi(strings.TrimSpace(match[1]))
-	if err != nil {
-		return domain.CharacterDeath{}, false
-	}
-
-	reason := parseDeathReason(deathText)
-	targets := strings.TrimSpace(match[2])
-	targets = characterParentheticalRe.ReplaceAllString(targets, "")
-	targets = strings.TrimSpace(strings.TrimSuffix(targets, "."))
-	if targets == "" {
-		return domain.CharacterDeath{}, false
-	}
-
-	killersText := targets
-	assistsText := ""
-	if assistIdx := strings.Index(strings.ToLower(targets), " assisted by "); assistIdx >= 0 {
-		killersText = strings.TrimSpace(targets[:assistIdx])
-		assistsText = strings.TrimSpace(targets[assistIdx+len(" assisted by "):])
-	}
-
-	death := domain.CharacterDeath{
-		Time:    timeUTC,
-		Level:   level,
-		Killers: splitKillParticipants(killersText),
-		Assists: splitKillParticipants(assistsText),
-		Reason:  reason,
-	}
-	return death, true
-}
-
-func parseAccountInformation(container *goquery.Selection) (domain.AccountInformation, error) {
-	account := domain.AccountInformation{}
-	var parseErr error
-
-	container.Find(".TableContent tr").EachWithBreak(func(_ int, row *goquery.Selection) bool {
-		cells := row.Find("td")
-		if cells.Length() < 2 {
-			return true
-		}
-		label := strings.ToLower(normalizeLabel(cells.Eq(0).Text()))
-		value := normalizeText(cells.Eq(1).Text())
-		switch label {
-		case "created", "criada", "criado":
-			created, dateErr := parseRubinotDateTimeToUTC(value)
-			if dateErr != nil {
-				parseErr = validation.NewError(validation.ErrorUpstreamUnknown, dateErr.Error(), dateErr)
-				return false
-			}
-			account.Created = created
-		case "loyalty title", "titulo de lealdade", "título de lealdade":
-			account.LoyaltyTitle = value
-		}
-		return true
-	})
-
-	if parseErr != nil {
-		return domain.AccountInformation{}, parseErr
-	}
-
-	return account, nil
-}
-
-func parseOtherCharacters(container *goquery.Selection) []domain.OtherCharacter {
-	characters := make([]domain.OtherCharacter, 0)
-
-	container.Find(".TableContent tr").Each(func(_ int, row *goquery.Selection) {
-		cells := row.Find("td")
-		if cells.Length() < 3 {
-			return
-		}
-
-		nameRaw := normalizeText(cells.Eq(0).Text())
-		world := normalizeText(cells.Eq(1).Text())
-		statusRaw := normalizeText(cells.Eq(2).Text())
-		if strings.EqualFold(nameRaw, "name") || strings.EqualFold(world, "world") {
-			return
-		}
-
-		name := characterRowPrefixPattern.ReplaceAllString(nameRaw, "")
-		main := strings.Contains(strings.ToLower(name), "(main character)")
-		traded := strings.Contains(strings.ToLower(name), "(traded)")
-		name = strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(name, "(Main Character)", ""), "(Traded)", ""))
-
-		deleted := strings.Contains(strings.ToLower(statusRaw), "deleted")
-		status := "offline"
-		if strings.Contains(strings.ToLower(statusRaw), "online") {
-			status = "online"
-		} else if deleted {
-			status = "deleted"
-		}
-
-		if name == "" || world == "" {
-			return
-		}
-
-		characters = append(characters, domain.OtherCharacter{
-			Name:    name,
-			World:   world,
-			Status:  status,
-			Main:    main,
-			Traded:  traded,
-			Deleted: deleted,
+	deaths := make([]domain.CharacterDeath, 0, len(payload.Deaths))
+	for _, row := range payload.Deaths {
+		deaths = append(deaths, domain.CharacterDeath{
+			Time:               unixTextToRFC3339(row.Time),
+			Level:              row.Level,
+			KilledBy:           strings.TrimSpace(row.KilledBy),
+			IsPlayerKill:       row.IsPlayer == 1,
+			MostDamageBy:       strings.TrimSpace(row.MostDamageBy),
+			MostDamageIsPlayer: row.MostDamageIsPlayer == 1,
 		})
-	})
-
-	return characters
-}
-
-func parseCharacterTitle(value string) (string, int) {
-	match := characterTitlePattern.FindStringSubmatch(value)
-	if len(match) != 3 {
-		return value, 0
-	}
-	titles, err := strconv.Atoi(strings.TrimSpace(match[2]))
-	if err != nil {
-		return strings.TrimSpace(match[1]), 0
-	}
-	return strings.TrimSpace(match[1]), titles
-}
-
-func parseCharacterGuild(valueCell *goquery.Selection, valueText string) *domain.CharacterGuild {
-	if valueText == "" {
-		return nil
 	}
 
-	guild := &domain.CharacterGuild{}
-	if anchorName := normalizeText(valueCell.Find("a").First().Text()); anchorName != "" {
-		guild.Name = anchorName
-	}
-
-	if match := characterGuildRankPattern.FindStringSubmatch(valueText); len(match) == 3 {
-		guild.Rank = strings.TrimSpace(match[1])
-		if guild.Name == "" {
-			guild.Name = strings.TrimSpace(match[2])
+	others := make([]domain.OtherCharacter, 0, len(payload.OtherCharacters))
+	for _, row := range payload.OtherCharacters {
+		otherWorld := strings.TrimSpace(row.World)
+		if otherWorld == "" {
+			otherWorld = worldNameByID(row.WorldID)
 		}
+		others = append(others, domain.OtherCharacter{
+			Name:    strings.TrimSpace(row.Name),
+			World:   otherWorld,
+			Status:  strings.TrimSpace(row.Status),
+			Main:    row.Main,
+			Traded:  row.Traded,
+			Deleted: row.Deleted,
+		})
 	}
 
-	if guild.Name == "" && guild.Rank == "" {
-		return nil
+	badges := make([]domain.CharacterBadge, 0, len(payload.AccountBadges))
+	for _, row := range payload.AccountBadges {
+		badges = append(badges, domain.CharacterBadge{ID: intFromAny(row["id"]), Name: stringFromAny(row["name"])})
 	}
-	return guild
+
+	displayed := make([]domain.DisplayedAchievement, 0, len(payload.DisplayedAchievements))
+	for _, row := range payload.DisplayedAchievements {
+		displayed = append(displayed, domain.DisplayedAchievement{ID: intFromAny(row["id"]), Name: stringFromAny(row["name"])})
+	}
+
+	marriedTo := ""
+	if player.Partner != nil {
+		marriedTo = strings.TrimSpace(*player.Partner)
+	}
+	title := ""
+	if player.Title != nil {
+		title = strings.TrimSpace(*player.Title)
+	}
+
+	info := domain.CharacterInfo{
+		ID:                player.ID,
+		AccountID:         player.AccountID,
+		Name:              strings.TrimSpace(player.Name),
+		FormerNames:       player.FormerNames,
+		Sex:               strings.TrimSpace(player.Sex),
+		Title:             title,
+		Vocation:          strings.TrimSpace(player.Vocation),
+		VocationID:        player.VocationID,
+		Level:             player.Level,
+		AchievementPoints: player.AchievementPoints,
+		World:             worldName,
+		WorldID:           player.WorldID,
+		Residence:         strings.TrimSpace(player.Residence),
+		MarriedTo:         marriedTo,
+		House:             house,
+		Guild:             guild,
+		LastLogin:         unixTextToRFC3339(player.LastLogin),
+		Comment:           strings.TrimSpace(player.Comment),
+		IsBanned:          payload.BanInfo != nil,
+		BanReason:         stringFromAny(payload.BanInfo["reason"]),
+		LoyaltyPoints:     player.LoyaltyPoints,
+		IsHidden:          player.IsHidden,
+		Created:           unixSecondsToRFC3339(player.Created),
+		AccountCreated:    unixSecondsToRFC3339(player.AccountCreated),
+		VIPTime:           player.VIPTime,
+		Outfit:            outfit,
+		Auction:           player.Auction,
+		FoundByOldName:    payload.FoundByOldName,
+	}
+	if house != nil {
+		info.Houses = []domain.CharacterHouse{*house}
+	}
+
+	account := &domain.AccountInformation{
+		Created:       unixSecondsToRFC3339(player.AccountCreated),
+		LoyaltyPoints: player.LoyaltyPoints,
+	}
+
+	return domain.CharacterResult{
+		CharacterInfo:         info,
+		Deaths:                deaths,
+		AccountInfo:           account,
+		OtherCharacters:       others,
+		AccountBadges:         badges,
+		DisplayedAchievements: displayed,
+	}
 }
 
-func parseCharacterHouses(valueCell *goquery.Selection) []domain.CharacterHouse {
-	houses := make([]domain.CharacterHouse, 0)
-	valueCell.Find("a").Each(func(_ int, anchor *goquery.Selection) {
-		house := domain.CharacterHouse{Name: normalizeText(anchor.Text())}
-		href, _ := anchor.Attr("href")
-		if idMatch := characterHouseIDPattern.FindStringSubmatch(href); len(idMatch) == 2 {
-			house.HouseID, _ = strconv.Atoi(idMatch[1])
-		}
-		if parsedHref, err := url.Parse(href); err == nil {
-			house.World = parsedHref.Query().Get("world")
-		}
-		if house.Name != "" {
-			houses = append(houses, house)
-		}
-	})
-
-	if len(houses) == 0 {
-		plain := normalizeText(valueCell.Text())
-		if plain != "" {
-			houses = append(houses, domain.CharacterHouse{Name: plain})
-		}
+func intFromAny(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
+		return parsed
+	default:
+		return 0
 	}
-	return houses
 }
 
-func splitKillParticipants(raw string) []string {
-	clean := strings.TrimSpace(strings.TrimSuffix(raw, "."))
-	if clean == "" {
-		return nil
+func stringFromAny(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case fmt.Stringer:
+		return strings.TrimSpace(typed.String())
+	case nil:
+		return ""
+	default:
+		return strings.TrimSpace(fmt.Sprintf("%v", typed))
 	}
-	parts := strings.Split(clean, " and by ")
-	participants := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item == "" {
-			continue
-		}
-		participants = append(participants, item)
-	}
-	if len(participants) == 0 {
-		participants = append(participants, clean)
-	}
-	return participants
-}
-
-func parseDeathReason(raw string) string {
-	matches := characterParentheticalRe.FindAllStringSubmatch(raw, -1)
-	for _, match := range matches {
-		if len(match) != 2 {
-			continue
-		}
-		reason := strings.ToLower(strings.TrimSpace(match[1]))
-		if reason == "soloed" || reason == "assisted" {
-			continue
-		}
-		if reason != "" {
-			return reason
-		}
-	}
-	return ""
-}
-
-func splitCSV(raw string) []string {
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		item := strings.TrimSpace(part)
-		if item == "" {
-			continue
-		}
-		out = append(out, item)
-	}
-	return out
-}
-
-func normalizeLabel(raw string) string {
-	return strings.TrimSpace(strings.TrimSuffix(normalizeText(raw), ":"))
-}
-
-func normalizeText(raw string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
-}
-
-func stripCharacterNameMarkers(name string) string {
-	clean := strings.TrimSpace(name)
-	clean = strings.ReplaceAll(clean, "(Traded)", "")
-	clean = strings.ReplaceAll(clean, "(Main Character)", "")
-	return strings.TrimSpace(clean)
-}
-
-func isCharacterNotFound(errorText string) bool {
-	lower := strings.ToLower(errorText)
-	if lower == "" {
-		return false
-	}
-	return strings.Contains(lower, "could not find character") ||
-		strings.Contains(lower, "does not exist or has been deleted") ||
-		strings.Contains(lower, "character not found") ||
-		strings.Contains(lower, "não existe") ||
-		strings.Contains(lower, "nao existe") ||
-		strings.Contains(lower, "não foi encontrado") ||
-		strings.Contains(lower, "nao foi encontrado")
-}
-
-func isCharacterBanned(errorText string) bool {
-	lower := strings.ToLower(errorText)
-	if lower == "" {
-		return false
-	}
-	return strings.Contains(lower, "banished") || strings.Contains(lower, "banned")
 }

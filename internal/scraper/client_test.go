@@ -79,6 +79,42 @@ func TestClientFetchTargetMaintenance(t *testing.T) {
 	client := newClientForTest(t, server.URL, 8)
 	_, fetchErr := client.Fetch(context.Background(), "https://www.rubinot.com.br")
 	assertValidationErrorCode(t, fetchErr, validation.ErrorUpstreamMaintenanceMode)
+	if fetchErr.Error() != validation.UpstreamMaintenanceMessage {
+		t.Fatalf("expected maintenance message %q, got %q", validation.UpstreamMaintenanceMessage, fetchErr.Error())
+	}
+}
+
+func TestClientFetchTargetMaintenanceMessageInHTML(t *testing.T) {
+	server := newFlareSolverrServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, flaresolverrResponseJSON("ok", "", http.StatusOK, "<html><body><p>Server is under maintenance, please visit later.</p></body></html>"))
+	})
+	defer server.Close()
+
+	client := newClientForTest(t, server.URL, 8)
+	_, fetchErr := client.Fetch(context.Background(), "https://www.rubinot.com.br")
+	assertValidationErrorCode(t, fetchErr, validation.ErrorUpstreamMaintenanceMode)
+	if fetchErr.Error() != validation.UpstreamMaintenanceMessage {
+		t.Fatalf("expected maintenance message %q, got %q", validation.UpstreamMaintenanceMessage, fetchErr.Error())
+	}
+}
+
+func TestClientFetchTargetMaintenanceURL(t *testing.T) {
+	server := newFlareSolverrServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(
+			w,
+			`{"status":"ok","message":"","solution":{"response":"<html><body>temporary page</body></html>","status":200,"url":"https://www.rubinot.com.br/maintenance"}}`,
+		)
+	})
+	defer server.Close()
+
+	client := newClientForTest(t, server.URL, 8)
+	_, fetchErr := client.Fetch(context.Background(), "https://www.rubinot.com.br")
+	assertValidationErrorCode(t, fetchErr, validation.ErrorUpstreamMaintenanceMode)
+	if fetchErr.Error() != validation.UpstreamMaintenanceMessage {
+		t.Fatalf("expected maintenance message %q, got %q", validation.UpstreamMaintenanceMessage, fetchErr.Error())
+	}
 }
 
 func TestClientFetchTargetUnknownError(t *testing.T) {

@@ -2,68 +2,44 @@ package scraper
 
 import (
 	"context"
-	"strings"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
-func TestParseKillstatisticsHTMLNormalFixture(t *testing.T) {
-	html := readFixture(t, "killstatistics", "normal.html")
-	result, err := parseKillstatisticsHTML("Belaria", html)
+func TestFetchKillstatisticsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/killstats")
+		assertQuery(t, r, "world", "15")
+		writeJSON(w, map[string]any{
+			"entries": []map[string]any{{
+				"race_name":            "dragon",
+				"players_killed_24h":   2,
+				"creatures_killed_24h": 500,
+				"players_killed_7d":    10,
+				"creatures_killed_7d":  3500,
+			}},
+			"totals": map[string]any{
+				"players_killed_24h":   660,
+				"creatures_killed_24h": 1948846,
+				"players_killed_7d":    6074,
+				"creatures_killed_7d":  18566020,
+			},
+		})
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	result, _, err := FetchKillstatistics(context.Background(), baseURLOf(api), "Belaria", 15, testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
-		t.Fatalf("expected normal fixture to parse, got error: %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
-
-	if result.World != "Belaria" {
-		t.Fatalf("expected world Belaria, got %q", result.World)
+	if len(result.Entries) != 1 {
+		t.Fatalf("expected one entry, got %d", len(result.Entries))
 	}
-	if len(result.Entries) == 0 {
-		t.Fatal("expected killstatistics entries")
-	}
-	if result.Total.LastDayKilled <= 0 || result.Total.LastWeekKilled <= 0 {
-		t.Fatalf("expected non-zero totals, got %+v", result.Total)
-	}
-
-	first := result.Entries[0]
-	if first.Race == "" {
-		t.Fatalf("expected first entry race, got %+v", first)
-	}
-}
-
-func TestParseKillstatisticsHTMLZeroEntriesFixture(t *testing.T) {
-	html := readFixture(t, "killstatistics", "zero_entries.html")
-	result, err := parseKillstatisticsHTML("Belaria", html)
-	if err != nil {
-		t.Fatalf("expected zero_entries fixture to parse, got error: %v", err)
-	}
-	if len(result.Entries) != 0 {
-		t.Fatalf("expected no entries, got %d", len(result.Entries))
-	}
-	if result.Total.LastDayKilled != 0 || result.Total.LastWeekKilled != 0 {
-		t.Fatalf("expected zero totals, got %+v", result.Total)
-	}
-}
-
-func TestFetchKillstatisticsHappy(t *testing.T) {
-	fixture := readFixture(t, "killstatistics", "normal.html")
-	server := newFakeFlareSolverrServer(t, func(_ string) string {
-		return fixture
-	})
-	defer server.Close()
-
-	result, sourceURL, err := FetchKillstatistics(
-		context.Background(),
-		"https://www.rubinot.com.br",
-		"Belaria",
-		15,
-		FetchOptions{FlareSolverrURL: server.URL, MaxTimeoutMs: 120000},
-	)
-	if err != nil {
-		t.Fatalf("expected FetchKillstatistics to succeed, got error: %v", err)
-	}
-	if !strings.Contains(sourceURL, "subtopic=killstatistics") {
-		t.Fatalf("unexpected source URL: %s", sourceURL)
-	}
-	if len(result.Entries) == 0 {
-		t.Fatal("expected non-empty entries")
+	if result.Total.LastWeekKilled != 18566020 {
+		t.Fatalf("unexpected totals: %+v", result.Total)
 	}
 }

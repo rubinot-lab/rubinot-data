@@ -2,91 +2,54 @@ package scraper
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
-
-	"github.com/giovannirco/rubinot-data/internal/validation"
 )
 
-func TestParseWorldHTMLBelariaFixture(t *testing.T) {
-	html := readFixture(t, "world", "belaria.html")
-	result, sourceURL, err := parseWorldHTML("Belaria", "https://www.rubinot.com.br/?subtopic=worlds&world=Belaria", html)
-	if err != nil {
-		t.Fatalf("expected belaria fixture to parse, got error: %v", err)
-	}
-	if sourceURL == "" {
-		t.Fatal("expected non-empty source URL")
-	}
-	if result.Name != "Belaria" {
-		t.Fatalf("expected world name Belaria, got %q", result.Name)
-	}
-	if !strings.EqualFold(result.Info.Status, "Online") {
-		t.Fatalf("expected Online status, got %q", result.Info.Status)
-	}
-	if !strings.HasSuffix(result.Info.CreationDate, "Z") {
-		t.Fatalf("expected RFC3339 UTC creation date, got %q", result.Info.CreationDate)
-	}
-	if len(result.PlayersOnline) == 0 {
-		t.Fatal("expected non-empty players list for belaria fixture")
-	}
-}
-
-func TestParseWorldHTMLOfflineFixture(t *testing.T) {
-	// FIXTURE: synthetic, must be replaced with real capture
-	html := readFixture(t, "world", "offline_world.html")
-	result, _, err := parseWorldHTML("Belaria", "https://www.rubinot.com.br/?subtopic=worlds&world=Belaria", html)
-	if err != nil {
-		t.Fatalf("expected offline fixture to parse, got error: %v", err)
-	}
-	if !strings.EqualFold(result.Info.Status, "Offline") {
-		t.Fatalf("expected Offline status, got %q", result.Info.Status)
-	}
-	if result.Info.PlayersOnline != 0 {
-		t.Fatalf("expected players_online=0 for offline world, got %d", result.Info.PlayersOnline)
-	}
-	if len(result.PlayersOnline) != 0 {
-		t.Fatalf("expected empty players list for offline world, got %d", len(result.PlayersOnline))
-	}
-}
-
-func TestParseWorldHTMLNotFoundFixture(t *testing.T) {
-	html := readFixture(t, "world", "not_found.html")
-	_, _, err := parseWorldHTML("WorldDoesNotExist123", "https://www.rubinot.com.br/?subtopic=worlds&world=WorldDoesNotExist123", html)
-	assertValidationCode(t, err, validation.ErrorEntityNotFound)
-}
-
-func TestFetchWorldHappy(t *testing.T) {
-	worldFixture := readFixture(t, "world", "belaria.html")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(
-			w,
-			`{"status":"ok","message":"","solution":{"response":%q,"status":200,"url":"https://www.rubinot.com.br/?subtopic=worlds&world=Belaria"}}`,
-			worldFixture,
-		)
+func TestFetchWorldFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/worlds/Belaria")
+		writeJSON(w, map[string]any{
+			"world": map[string]any{
+				"id":           15,
+				"name":         "Belaria",
+				"pvpType":      "pvp",
+				"pvpTypeLabel": "Open PvP",
+				"worldType":    "green",
+				"locked":       true,
+				"creationDate": int64(1731297600),
+			},
+			"playersOnline": 1024,
+			"record":        2048,
+			"recordTime":    int64(1770597564),
+			"players": []map[string]any{{
+				"name":       "Tester",
+				"level":      100,
+				"vocation":   "Elder Druid",
+				"vocationId": 6,
+			}},
+		})
 	}))
-	defer server.Close()
+	defer api.Close()
 
-	result, sourceURL, err := FetchWorld(
-		context.Background(),
-		"https://www.rubinot.com.br",
-		"Belaria",
-		FetchOptions{FlareSolverrURL: server.URL, MaxTimeoutMs: 120000},
-	)
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	result, sourceURL, err := FetchWorld(context.Background(), baseURLOf(api), "Belaria", testFetchOptionsWithCDP("", cdpSrv.URL))
 	if err != nil {
-		t.Fatalf("expected FetchWorld to succeed, got error: %v", err)
+		t.Fatalf("expected no error, got %v", err)
 	}
-	if sourceURL != "https://www.rubinot.com.br/?subtopic=worlds&world=Belaria" {
+	if sourceURL != baseURLOf(api)+"/api/worlds/Belaria" {
 		t.Fatalf("unexpected source URL: %s", sourceURL)
 	}
 	if result.Name != "Belaria" {
-		t.Fatalf("expected world Belaria, got %q", result.Name)
+		t.Fatalf("unexpected world name: %s", result.Name)
 	}
-	if len(result.PlayersOnline) == 0 {
-		t.Fatal("expected non-empty players list")
+	if result.Info.Record != 2048 {
+		t.Fatalf("expected record 2048, got %d", result.Info.Record)
+	}
+	if len(result.PlayersOnline) != 1 || result.PlayersOnline[0].VocationID != 6 {
+		t.Fatalf("unexpected players payload: %+v", result.PlayersOnline)
 	}
 }

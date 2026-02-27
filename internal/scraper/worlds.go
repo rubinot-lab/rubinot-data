@@ -3,22 +3,33 @@ package scraper
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-var playersOnlinePattern = regexp.MustCompile(`(?i)([\d,.]+)\s+players online`)
+type worldsAPIResponse struct {
+	Worlds []struct {
+		ID            int    `json:"id"`
+		Name          string `json:"name"`
+		PVPType       string `json:"pvpType"`
+		PVPTypeLabel  string `json:"pvpTypeLabel"`
+		WorldType     string `json:"worldType"`
+		Locked        bool   `json:"locked"`
+		PlayersOnline int    `json:"playersOnline"`
+	} `json:"worlds"`
+	TotalOnline       int   `json:"totalOnline"`
+	OverallRecord     int   `json:"overallRecord"`
+	OverallRecordTime int64 `json:"overallRecordTime"`
+}
 
 func FetchWorlds(ctx context.Context, baseURL string, opts FetchOptions) (domain.WorldsResult, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchWorlds")
 	defer span.End()
 
-	sourceURL := fmt.Sprintf("%s/?subtopic=worlds", strings.TrimRight(baseURL, "/"))
+	sourceURL := fmt.Sprintf("%s/api/worlds", strings.TrimRight(baseURL, "/"))
 	client := NewClient(opts)
 
 	span.SetAttributes(
@@ -27,7 +38,8 @@ func FetchWorlds(ctx context.Context, baseURL string, opts FetchOptions) (domain
 	)
 
 	started := time.Now()
-	htmlBody, err := client.Fetch(ctx, sourceURL)
+	var payload worldsAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
 	scrapeDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("worlds", "error").Inc()
@@ -36,82 +48,37 @@ func FetchWorlds(ctx context.Context, baseURL string, opts FetchOptions) (domain
 	scrapeRequests.WithLabelValues("worlds", "ok").Inc()
 
 	parseStarted := time.Now()
-	result, parseErr := parseWorldsHTML(htmlBody)
+	result := mapWorldsResponse(payload)
 	parseDuration.WithLabelValues("worlds").Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.WorldsResult{}, sourceURL, parseErr
+
+	WorldsTotalPlayersOnline.Set(float64(result.TotalPlayersOnline))
+	for _, world := range result.Worlds {
+		WorldPlayersOnline.WithLabelValues(world.Name).Set(float64(world.PlayersOnline))
 	}
+	ParseItems.WithLabelValues("worlds").Set(float64(len(result.Worlds)))
 
 	return result, sourceURL, nil
 }
 
-func parseWorldsHTML(html string) (domain.WorldsResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		return domain.WorldsResult{}, err
-	}
-
-	result := domain.WorldsResult{
-		TotalPlayersOnline: parseTotalPlayersOnline(doc),
-		Worlds:             make([]domain.WorldOverview, 0),
-	}
-
-	targetTable := findWorldsTable(doc)
-	if targetTable == nil || targetTable.Length() == 0 {
-		return result, nil
-	}
-
-	targetTable.Find("tr").Slice(1, goquery.ToEnd).Each(func(_ int, row *goquery.Selection) {
-		columns := row.Find("td")
-		if columns.Length() < 4 {
-			return
-		}
-
-		worldName := strings.TrimSpace(columns.Eq(0).Text())
-		if worldName == "" {
-			return
-		}
-
+func mapWorldsResponse(payload worldsAPIResponse) domain.WorldsResult {
+	worlds := make([]domain.WorldOverview, 0, len(payload.Worlds))
+	for _, world := range payload.Worlds {
 		overview := domain.WorldOverview{
-			Name:          worldName,
+			ID:            world.ID,
+			Name:          strings.TrimSpace(world.Name),
 			Status:        "online",
-			PlayersOnline: parseInt(strings.TrimSpace(columns.Eq(1).Text())),
-			Location:      strings.TrimSpace(columns.Eq(2).Text()),
-			PVPType:       strings.TrimSpace(columns.Eq(3).Text()),
+			PlayersOnline: world.PlayersOnline,
+			PVPType:       strings.TrimSpace(world.PVPTypeLabel),
+			WorldType:     strings.TrimSpace(world.WorldType),
+			Locked:        world.Locked,
 		}
+		worlds = append(worlds, overview)
+	}
 
-		result.Worlds = append(result.Worlds, overview)
-	})
-
-	return result, nil
-}
-
-func parseTotalPlayersOnline(doc *goquery.Document) int {
-	totalPlayers := 0
-	doc.Find(".InfoBarSmallElement").EachWithBreak(func(_ int, item *goquery.Selection) bool {
-		matches := playersOnlinePattern.FindStringSubmatch(item.Text())
-		if len(matches) != 2 {
-			return true
-		}
-
-		totalPlayers = parseInt(matches[1])
-		return false
-	})
-	return totalPlayers
-}
-
-func findWorldsTable(doc *goquery.Document) *goquery.Selection {
-	var worldsTable *goquery.Selection
-	doc.Find("table.TableContent").EachWithBreak(func(_ int, table *goquery.Selection) bool {
-		header := strings.ToLower(strings.Join(strings.Fields(table.Find("tr").First().Text()), " "))
-		if strings.Contains(header, "world") &&
-			strings.Contains(header, "online") &&
-			strings.Contains(header, "location") &&
-			strings.Contains(header, "pvp type") {
-			worldsTable = table
-			return false
-		}
-		return true
-	})
-	return worldsTable
+	return domain.WorldsResult{
+		TotalPlayersOnline: payload.TotalOnline,
+		OverallRecord:      payload.OverallRecord,
+		OverallRecordTime:  payload.OverallRecordTime,
+		Worlds:             worlds,
+	}
 }

@@ -4,33 +4,44 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
-	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
-)
-
-var (
-	deathRowIndexPattern = regexp.MustCompile(`^\d+\.$`)
-	deathDatePattern     = regexp.MustCompile(`\d{1,2}\.\d{1,2}\.\d{4},\s*\d{1,2}:\d{2}:\d{2}`)
-	deathLevelPattern    = regexp.MustCompile(`(?i)\bat level\s+(\d+)`)
-	deathByPattern       = regexp.MustCompile(`(?i)\bby\s+(.+?)(?:\.\s*$|$)`)
-	noDeathsPattern      = regexp.MustCompile(`(?i)no one died on`)
 )
 
 type DeathsFilters struct {
 	Guild    string
 	MinLevel int
 	PvPOnly  *bool
+	Page     int
+}
+
+type deathsAPIResponse struct {
+	Deaths []struct {
+		PlayerID           int    `json:"player_id"`
+		Time               string `json:"time"`
+		Level              int    `json:"level"`
+		KilledBy           string `json:"killed_by"`
+		IsPlayer           int    `json:"is_player"`
+		MostDamageBy       string `json:"mostdamage_by"`
+		MostDamageIsPlayer int    `json:"mostdamage_is_player"`
+		Victim             string `json:"victim"`
+		WorldID            int    `json:"world_id"`
+	} `json:"deaths"`
+	Pagination struct {
+		CurrentPage  int `json:"currentPage"`
+		TotalPages   int `json:"totalPages"`
+		TotalCount   int `json:"totalCount"`
+		ItemsPerPage int `json:"itemsPerPage"`
+	} `json:"pagination"`
 }
 
 func FetchDeaths(
 	ctx context.Context,
-	baseURL string,
+	baseURL,
 	worldName string,
 	worldID int,
 	filters DeathsFilters,
@@ -39,19 +50,34 @@ func FetchDeaths(
 	ctx, span := tracer.Start(ctx, "scraper.FetchDeaths")
 	defer span.End()
 
-	canonicalWorld := strings.TrimSpace(worldName)
-	sourceURL := buildDeathsURL(baseURL, worldID, filters)
+	query := url.Values{}
+	query.Set("world", strconv.Itoa(worldID))
+	if filters.Page > 0 {
+		query.Set("page", strconv.Itoa(filters.Page))
+	}
+	if filters.MinLevel > 0 {
+		query.Set("level", strconv.Itoa(filters.MinLevel))
+	}
+	if filters.PvPOnly != nil {
+		query.Set("pvp", strconv.FormatBool(*filters.PvPOnly))
+	}
+	if strings.TrimSpace(filters.Guild) != "" {
+		query.Set("guild", strings.TrimSpace(filters.Guild))
+	}
+
+	sourceURL := fmt.Sprintf("%s/api/deaths?%s", strings.TrimRight(baseURL, "/"), query.Encode())
 	client := NewClient(opts)
 
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "deaths"),
-		attribute.String("rubinot.world", canonicalWorld),
-		attribute.Int("rubinot.world_id", worldID),
 		attribute.String("rubinot.source_url", sourceURL),
+		attribute.String("rubinot.world", worldName),
+		attribute.Int("rubinot.world_id", worldID),
 	)
 
 	started := time.Now()
-	htmlBody, err := client.Fetch(ctx, sourceURL)
+	var payload deathsAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
 	scrapeDuration.WithLabelValues("deaths").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("deaths", "error").Inc()
@@ -59,168 +85,69 @@ func FetchDeaths(
 	}
 	scrapeRequests.WithLabelValues("deaths", "ok").Inc()
 
-	parseStart := time.Now()
-	result, parseErr := parseDeathsHTML(canonicalWorld, filters, htmlBody)
-	parseDuration.WithLabelValues("deaths").Observe(time.Since(parseStart).Seconds())
-	if parseErr != nil {
-		return domain.DeathsResult{}, sourceURL, parseErr
-	}
+	parseStarted := time.Now()
+	result := mapDeathsResponse(worldName, filters, payload)
+	parseDuration.WithLabelValues("deaths").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("deaths").Set(float64(len(result.Entries)))
 
 	return result, sourceURL, nil
 }
 
-func buildDeathsURL(baseURL string, worldID int, filters DeathsFilters) string {
-	sourceURL := fmt.Sprintf("%s/?subtopic=latestdeaths&world=%d", strings.TrimRight(baseURL, "/"), worldID)
-	if filters.Guild != "" {
-		sourceURL += "&guild=" + url.QueryEscape(filters.Guild)
-	}
-	if filters.MinLevel > 0 {
-		sourceURL += fmt.Sprintf("&level=%d", filters.MinLevel)
-	}
-	if filters.PvPOnly != nil && *filters.PvPOnly {
-		sourceURL += "&pvp=1"
-	}
-	return sourceURL
-}
+func mapDeathsResponse(worldName string, filters DeathsFilters, payload deathsAPIResponse) domain.DeathsResult {
+	entries := make([]domain.DeathEntry, 0, len(payload.Deaths))
+	for _, row := range payload.Deaths {
+		killedBy := strings.TrimSpace(row.KilledBy)
+		mostDamageBy := strings.TrimSpace(row.MostDamageBy)
 
-func parseDeathsHTML(worldName string, filters DeathsFilters, html string) (domain.DeathsResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		return domain.DeathsResult{}, err
+		killers := make([]string, 0, 2)
+		if killedBy != "" {
+			killers = append(killers, killedBy)
+		}
+		if mostDamageBy != "" && !strings.EqualFold(mostDamageBy, killedBy) {
+			killers = append(killers, mostDamageBy)
+		}
+
+		entry := domain.DeathEntry{
+			PlayerID: row.PlayerID,
+			Date:     unixTextToRFC3339(row.Time),
+			Victim: domain.DeathVictim{
+				Name:  strings.TrimSpace(row.Victim),
+				Level: row.Level,
+			},
+			KilledBy:           killedBy,
+			IsPlayerKill:       row.IsPlayer == 1,
+			MostDamageBy:       mostDamageBy,
+			MostDamageIsPlayer: row.MostDamageIsPlayer == 1,
+			WorldID:            row.WorldID,
+			Killers:            killers,
+			IsPvP:              row.IsPlayer == 1 || row.MostDamageIsPlayer == 1,
+		}
+		entries = append(entries, entry)
 	}
 
-	result := domain.DeathsResult{
+	page := payload.Pagination.CurrentPage
+	if page == 0 {
+		page = filters.Page
+		if page == 0 {
+			page = 1
+		}
+	}
+
+	return domain.DeathsResult{
 		World: worldName,
 		Filters: domain.DeathFilters{
 			Guild:    filters.Guild,
 			MinLevel: filters.MinLevel,
 			PvPOnly:  filters.PvPOnly,
+			Page:     page,
 		},
-		Entries: make([]domain.DeathEntry, 0),
+		Entries:     entries,
+		TotalDeaths: payload.Pagination.TotalCount,
+		Pagination: domain.DeathPagination{
+			CurrentPage:  page,
+			TotalPages:   payload.Pagination.TotalPages,
+			TotalCount:   payload.Pagination.TotalCount,
+			ItemsPerPage: payload.Pagination.ItemsPerPage,
+		},
 	}
-
-	if noDeathsPattern.MatchString(strings.ToLower(doc.Text())) {
-		return result, nil
-	}
-
-	rows := findDeathRows(doc)
-	if len(rows) == 0 {
-		return domain.DeathsResult{}, validation.NewError(validation.ErrorUpstreamUnknown, "deaths table not found", nil)
-	}
-
-	for _, row := range rows {
-		tds := row.Find("td")
-		if tds.Length() < 3 {
-			continue
-		}
-
-		dateRaw := strings.TrimSpace(tds.Eq(1).Text())
-		dateUTC, dateErr := parseRubinotDateTimeToUTC(dateRaw)
-		if dateErr != nil {
-			return domain.DeathsResult{}, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("invalid death date %q", dateRaw), dateErr)
-		}
-
-		deathCell := tds.Eq(2)
-		links := deathCell.Find("a")
-		victimName := strings.TrimSpace(links.First().Text())
-		if victimName == "" {
-			continue
-		}
-
-		text := strings.Join(strings.Fields(deathCell.Text()), " ")
-		level := 0
-		levelMatch := deathLevelPattern.FindStringSubmatch(text)
-		if len(levelMatch) == 2 {
-			level = parseInt(levelMatch[1])
-		}
-
-		playerKillers := make([]string, 0)
-		if links.Length() > 1 {
-			links.Slice(1, goquery.ToEnd).Each(func(_ int, link *goquery.Selection) {
-				killer := strings.TrimSpace(link.Text())
-				if killer != "" {
-					playerKillers = append(playerKillers, killer)
-				}
-			})
-		}
-
-		killers := playerKillers
-		if len(killers) == 0 {
-			killers = parseMonsterKillers(text)
-		}
-
-		entry := domain.DeathEntry{
-			Date: dateUTC,
-			Victim: domain.DeathVictim{
-				Name:  victimName,
-				Level: level,
-			},
-			Killers: killers,
-			IsPvP:   len(playerKillers) > 0,
-		}
-
-		if filters.MinLevel > 0 && entry.Victim.Level < filters.MinLevel {
-			continue
-		}
-		if filters.PvPOnly != nil && *filters.PvPOnly && !entry.IsPvP {
-			continue
-		}
-
-		result.Entries = append(result.Entries, entry)
-	}
-
-	result.TotalDeaths = len(result.Entries)
-	return result, nil
-}
-
-func findDeathRows(doc *goquery.Document) []*goquery.Selection {
-	rows := make([]*goquery.Selection, 0)
-	doc.Find("table.TableContent").EachWithBreak(func(_ int, table *goquery.Selection) bool {
-		candidateRows := table.Find("tr[bgcolor]")
-		if candidateRows.Length() == 0 {
-			return true
-		}
-
-		first := candidateRows.First()
-		tds := first.Find("td")
-		if tds.Length() < 3 {
-			return true
-		}
-
-		indexText := strings.TrimSpace(tds.Eq(0).Text())
-		dateText := strings.TrimSpace(tds.Eq(1).Text())
-		if !deathRowIndexPattern.MatchString(indexText) || !deathDatePattern.MatchString(dateText) {
-			return true
-		}
-
-		candidateRows.Each(func(_ int, row *goquery.Selection) {
-			rows = append(rows, row)
-		})
-		return false
-	})
-	return rows
-}
-
-func parseMonsterKillers(text string) []string {
-	byMatch := deathByPattern.FindStringSubmatch(text)
-	if len(byMatch) != 2 {
-		return []string{}
-	}
-
-	rawKillers := strings.TrimSpace(byMatch[1])
-	if rawKillers == "" {
-		return []string{}
-	}
-
-	candidate := strings.ReplaceAll(rawKillers, " and ", ",")
-	parts := strings.Split(candidate, ",")
-	killers := make([]string, 0, len(parts))
-	for _, part := range parts {
-		killer := strings.TrimSpace(strings.TrimSuffix(part, "."))
-		if killer == "" {
-			continue
-		}
-		killers = append(killers, killer)
-	}
-	return killers
 }

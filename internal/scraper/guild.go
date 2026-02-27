@@ -4,41 +4,70 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"regexp"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
-	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
 )
 
-var (
-	guildTitlePattern       = regexp.MustCompile(`^(.*?)\s+-\s+Guilds\s+-\s+RubinOT$`)
-	guildFoundedPattern     = regexp.MustCompile(`(?i)founded on\s+(.+?)\s+on\s+([A-Za-z]{3}\s+\d{1,2}\s+\d{4})`)
-	guildDisbandDatePattern = regexp.MustCompile(`(?i)disband(?:ed|ing process and will be disbanded)\s+on\s+([^.]+)`)
-)
+type guildAPIResponse struct {
+	Guild struct {
+		ID           int         `json:"id"`
+		Name         string      `json:"name"`
+		MOTD         string      `json:"motd"`
+		Description  string      `json:"description"`
+		Homepage     string      `json:"homepage"`
+		WorldID      int         `json:"world_id"`
+		LogoName     string      `json:"logo_name"`
+		Balance      interface{} `json:"balance"`
+		CreationData int64       `json:"creationdata"`
+		Owner        *struct {
+			ID       int    `json:"id"`
+			Name     string `json:"name"`
+			Level    int    `json:"level"`
+			Vocation int    `json:"vocation"`
+		} `json:"owner"`
+		Members []struct {
+			ID        int    `json:"id"`
+			Name      string `json:"name"`
+			Level     int    `json:"level"`
+			Vocation  int    `json:"vocation"`
+			Rank      string `json:"rank"`
+			RankLevel int    `json:"rankLevel"`
+			Nick      string `json:"nick"`
+			JoinDate  int64  `json:"joinDate"`
+			IsOnline  bool   `json:"isOnline"`
+		} `json:"members"`
+		Ranks []struct {
+			ID    int    `json:"id"`
+			Name  string `json:"name"`
+			Level int    `json:"level"`
+		} `json:"ranks"`
+		Residence *struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+			Town string `json:"town"`
+		} `json:"residence"`
+	} `json:"guild"`
+}
 
 func FetchGuild(ctx context.Context, baseURL, guildName string, opts FetchOptions) (domain.GuildResult, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchGuild")
 	defer span.End()
 
-	started := time.Now()
-	sourceURL := fmt.Sprintf(
-		"%s/?subtopic=guilds&page=view&GuildName=%s",
-		strings.TrimRight(baseURL, "/"),
-		url.QueryEscape(guildName),
-	)
+	sourceURL := fmt.Sprintf("%s/api/guilds/%s", strings.TrimRight(baseURL, "/"), url.PathEscape(strings.TrimSpace(guildName)))
 	client := NewClient(opts)
 
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "guild"),
-		attribute.String("rubinot.guild", guildName),
 		attribute.String("rubinot.source_url", sourceURL),
+		attribute.String("rubinot.guild", guildName),
 	)
 
-	htmlBody, err := client.Fetch(ctx, sourceURL)
+	started := time.Now()
+	var payload guildAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
 	scrapeDuration.WithLabelValues("guild").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("guild", "error").Inc()
@@ -47,214 +76,86 @@ func FetchGuild(ctx context.Context, baseURL, guildName string, opts FetchOption
 	scrapeRequests.WithLabelValues("guild", "ok").Inc()
 
 	parseStarted := time.Now()
-	result, parseErr := parseGuildHTML(guildName, htmlBody)
+	result := mapGuildResponse(payload)
 	parseDuration.WithLabelValues("guild").Observe(time.Since(parseStarted).Seconds())
-	if parseErr != nil {
-		return domain.GuildResult{}, sourceURL, parseErr
-	}
+	ParseItems.WithLabelValues("guild").Set(float64(len(result.Members)))
 
 	return result, sourceURL, nil
 }
 
-func parseGuildHTML(requestedName, htmlBody string) (domain.GuildResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlBody))
-	if err != nil {
-		return domain.GuildResult{}, err
+func mapGuildResponse(payload guildAPIResponse) domain.GuildResult {
+	members := make([]domain.GuildMember, 0, len(payload.Guild.Members))
+	playersOnline := 0
+
+	for _, row := range payload.Guild.Members {
+		if row.IsOnline {
+			playersOnline++
+		}
+		members = append(members, domain.GuildMember{
+			ID:         row.ID,
+			Name:       strings.TrimSpace(row.Name),
+			Title:      strings.TrimSpace(row.Nick),
+			Rank:       strings.TrimSpace(row.Rank),
+			RankLevel:  row.RankLevel,
+			Vocation:   fallbackString(vocationNameByID(row.Vocation), fmt.Sprintf("%d", row.Vocation)),
+			VocationID: row.Vocation,
+			Level:      row.Level,
+			Joined:     unixSecondsToRFC3339(row.JoinDate),
+			IsOnline:   row.IsOnline,
+			Status:     mapOnlineStatus(row.IsOnline),
+		})
 	}
 
-	fullText := strings.ToLower(normalizeText(doc.Text()))
-	if strings.Contains(fullText, "a guild by that name was not found") || strings.Contains(fullText, "guild not found") {
-		return domain.GuildResult{}, validation.NewError(validation.ErrorEntityNotFound, "guild not found", nil)
+	ranks := make([]domain.GuildRank, 0, len(payload.Guild.Ranks))
+	for _, row := range payload.Guild.Ranks {
+		ranks = append(ranks, domain.GuildRank{ID: row.ID, Name: strings.TrimSpace(row.Name), Level: row.Level})
 	}
 
-	result := domain.GuildResult{
-		Name:   strings.TrimSpace(requestedName),
-		Active: true,
-	}
-
-	if title := strings.TrimSpace(doc.Find("title").First().Text()); title != "" {
-		if match := guildTitlePattern.FindStringSubmatch(title); len(match) == 2 && strings.TrimSpace(match[1]) != "" {
-			result.Name = strings.TrimSpace(match[1])
+	var owner *domain.GuildOwner
+	if payload.Guild.Owner != nil {
+		owner = &domain.GuildOwner{
+			ID:       payload.Guild.Owner.ID,
+			Name:     strings.TrimSpace(payload.Guild.Owner.Name),
+			Level:    payload.Guild.Owner.Level,
+			Vocation: payload.Guild.Owner.Vocation,
 		}
 	}
 
-	if hiddenGuildName, exists := doc.Find("input[name='GuildName']").First().Attr("value"); exists && strings.TrimSpace(hiddenGuildName) != "" {
-		result.Name = strings.TrimSpace(hiddenGuildName)
-	}
-
-	infoContainer := doc.Find("#GuildInformationContainer").First()
-	infoText := normalizeText(infoContainer.Text())
-	if infoText == "" {
-		return domain.GuildResult{}, validation.NewError(validation.ErrorEntityNotFound, "guild not found", nil)
-	}
-
-	parseGuildInfo(infoText, infoContainer, &result)
-
-	membersContainer := findContainerByHeaders(doc, []string{"guild members", "membros da guild"})
-	if membersContainer != nil {
-		members, parseErr := parseGuildMembers(membersContainer)
-		if parseErr != nil {
-			return domain.GuildResult{}, parseErr
-		}
-		result.Members = members
-	}
-
-	invitesContainer := findContainerByHeaders(doc, []string{"invited characters", "personagens convidados"})
-	if invitesContainer != nil {
-		invites, parseErr := parseGuildInvites(invitesContainer)
-		if parseErr != nil {
-			return domain.GuildResult{}, parseErr
-		}
-		result.Invites = invites
-	}
-
-	result.MembersTotal = len(result.Members)
-	result.MembersInvited = len(result.Invites)
-	for _, member := range result.Members {
-		if member.IsOnline {
-			result.PlayersOnline++
-		} else {
-			result.PlayersOffline++
+	var residence *domain.GuildResidence
+	if payload.Guild.Residence != nil {
+		residence = &domain.GuildResidence{
+			ID:   payload.Guild.Residence.ID,
+			Name: strings.TrimSpace(payload.Guild.Residence.Name),
+			Town: strings.TrimSpace(payload.Guild.Residence.Town),
 		}
 	}
 
-	return result, nil
-}
-
-func parseGuildInfo(infoText string, infoContainer *goquery.Selection, result *domain.GuildResult) {
-	lowerInfo := strings.ToLower(infoText)
-
-	if foundedMatch := guildFoundedPattern.FindStringSubmatch(infoText); len(foundedMatch) == 3 {
-		result.World = strings.TrimSpace(foundedMatch[1])
-		if foundedDate, err := parseRubinotDateToUTC(strings.TrimSpace(foundedMatch[2])); err == nil {
-			result.Founded = foundedDate
-		}
-	}
-
-	result.OpenApplications = strings.Contains(lowerInfo, "opened for applications")
-	if strings.Contains(lowerInfo, "closed for applications") {
-		result.OpenApplications = false
-	}
-
-	if strings.Contains(lowerInfo, "disband") {
-		result.Active = false
-		result.DisbandCondition = infoText
-		if disbandMatch := guildDisbandDatePattern.FindStringSubmatch(infoText); len(disbandMatch) == 2 {
-			rawDate := strings.TrimSpace(disbandMatch[1])
-			if disbandDate, err := parseRubinotDateTimeToUTC(rawDate); err == nil {
-				result.DisbandDate = disbandDate
-			} else if dateOnly, dateErr := parseRubinotDateToUTC(rawDate); dateErr == nil {
-				result.DisbandDate = dateOnly
-			}
-		}
-	}
-
-	result.InWar = strings.Contains(lowerInfo, "war against") ||
-		strings.Contains(lowerInfo, "in war with") ||
-		strings.Contains(lowerInfo, "currently at war") ||
-		strings.Contains(lowerInfo, "is at war")
-
-	if guildhallAnchor := infoContainer.Find("a[href*='subtopic=houses'][href*='houseid=']").First(); guildhallAnchor.Length() > 0 {
-		hall := &domain.GuildHall{Name: normalizeText(guildhallAnchor.Text())}
-		if href, exists := guildhallAnchor.Attr("href"); exists {
-			if idMatch := characterHouseIDPattern.FindStringSubmatch(href); len(idMatch) == 2 {
-				hall.HouseID = parseInt(idMatch[1])
-			}
-		}
-		result.Guildhall = hall
+	membersTotal := len(members)
+	return domain.GuildResult{
+		ID:             payload.Guild.ID,
+		Name:           strings.TrimSpace(payload.Guild.Name),
+		MOTD:           strings.TrimSpace(payload.Guild.MOTD),
+		World:          worldNameByID(payload.Guild.WorldID),
+		WorldID:        payload.Guild.WorldID,
+		Description:    strings.TrimSpace(payload.Guild.Description),
+		LogoName:       strings.TrimSpace(payload.Guild.LogoName),
+		Balance:        strings.TrimSpace(fmt.Sprintf("%v", payload.Guild.Balance)),
+		Residence:      residence,
+		Active:         true,
+		Founded:        unixSecondsToRFC3339(payload.Guild.CreationData),
+		Homepage:       strings.TrimSpace(payload.Guild.Homepage),
+		Owner:          owner,
+		Ranks:          ranks,
+		PlayersOnline:  playersOnline,
+		PlayersOffline: membersTotal - playersOnline,
+		MembersTotal:   membersTotal,
+		Members:        members,
 	}
 }
 
-func parseGuildMembers(container *goquery.Selection) ([]domain.GuildMember, error) {
-	members := make([]domain.GuildMember, 0)
-	currentRank := ""
-
-	container.Find(".TableContent tr").Each(func(_ int, row *goquery.Selection) {
-		cells := row.Find("td")
-		if cells.Length() < 6 {
-			return
-		}
-
-		firstCell := strings.ToLower(normalizeText(cells.Eq(0).Text()))
-		if strings.Contains(firstCell, "rank") || strings.Contains(firstCell, "sort") {
-			return
-		}
-
-		rank := normalizeText(cells.Eq(0).Text())
-		if rank != "" {
-			currentRank = rank
-		} else {
-			rank = currentRank
-		}
-		nameCell := cells.Eq(1)
-		name := normalizeText(nameCell.Find("a").First().Text())
-		if name == "" {
-			name = normalizeText(nameCell.Text())
-		}
-		if name == "" {
-			return
-		}
-
-		fullNameTitle := normalizeText(nameCell.Text())
-		title := strings.TrimSpace(strings.TrimPrefix(fullNameTitle, name))
-
-		member := domain.GuildMember{
-			Rank:     rank,
-			Name:     name,
-			Title:    title,
-			Vocation: normalizeText(cells.Eq(2).Text()),
-			Level:    parseInt(normalizeText(cells.Eq(3).Text())),
-			Status:   strings.ToLower(normalizeText(cells.Eq(5).Text())),
-		}
-		if strings.Contains(member.Status, "online") {
-			member.IsOnline = true
-			member.Status = "online"
-		} else {
-			member.Status = "offline"
-		}
-
-		if joinedRaw := normalizeText(cells.Eq(4).Text()); joinedRaw != "" {
-			if joinedUTC, err := parseRubinotDateToUTC(joinedRaw); err == nil {
-				member.Joined = joinedUTC
-			}
-		}
-
-		members = append(members, member)
-	})
-
-	return members, nil
-}
-
-func parseGuildInvites(container *goquery.Selection) ([]domain.GuildInvite, error) {
-	invites := make([]domain.GuildInvite, 0)
-
-	container.Find(".TableContent tr").Each(func(_ int, row *goquery.Selection) {
-		cells := row.Find("td")
-		if cells.Length() < 2 {
-			return
-		}
-		if strings.EqualFold(normalizeText(cells.Eq(0).Text()), "Name") {
-			return
-		}
-
-		name := normalizeText(cells.Eq(0).Find("a").First().Text())
-		if name == "" {
-			name = normalizeText(cells.Eq(0).Text())
-		}
-		if name == "" {
-			return
-		}
-
-		invite := domain.GuildInvite{Name: name}
-		dateRaw := normalizeText(cells.Eq(1).Text())
-		if dateRaw != "" {
-			if inviteDate, err := parseRubinotDateToUTC(dateRaw); err == nil {
-				invite.Date = inviteDate
-			}
-		}
-
-		invites = append(invites, invite)
-	})
-
-	return invites, nil
+func mapOnlineStatus(isOnline bool) string {
+	if isOnline {
+		return "online"
+	}
+	return "offline"
 }

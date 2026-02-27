@@ -6,7 +6,7 @@ func TestAllCategories(t *testing.T) {
 	validator := testValidator()
 	categories := validator.AllCategories()
 
-	expectedIDs := []int{2, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22}
+	expectedIDs := []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}
 	if len(categories) != len(expectedIDs) {
 		t.Fatalf("expected %d categories, got %d", len(expectedIDs), len(categories))
 	}

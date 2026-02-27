@@ -20,6 +20,7 @@ jobs:
       IMAGE_NAME: ghcr.io/giovannirco/rubinot-data
       GITOPS_REPO: cddlabs-casa/omni-cddlabs-casa
       GITOPS_PATH: manifests/cddlabs/apps/rubinot/rubinot-data.yaml
+      GITOPS_CONFIGMAP_PATH: manifests/cddlabs/apps/rubinot/rubinot-data-cdp-patch-configmap.yaml
       GITOPS_BRANCH: master
     steps:
       - name: Checkout rubinot-data
@@ -65,6 +66,14 @@ jobs:
           token: ${{ secrets.OMNI_GITOPS_TOKEN }}
           path: gitops
           ref: ${{ env.GITOPS_BRANCH }}
+
+      - name: Generate CDP patch ConfigMap
+        run: |
+          set -euo pipefail
+          kubectl create configmap rubinot-data-cdp-patch \
+            --namespace=network \
+            --from-file=uc_patched_init.py=scripts/uc_patched_init.py \
+            --dry-run=client -o yaml > "gitops/${GITOPS_CONFIGMAP_PATH}"
 
       - name: Update GitOps deployment image and metadata
         run: |
@@ -114,11 +123,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if git diff --quiet -- ${GITOPS_PATH}; then
+          if git diff --quiet -- "${GITOPS_PATH}" "${GITOPS_CONFIGMAP_PATH}" && ! git ls-files --others --exclude-standard -- "${GITOPS_CONFIGMAP_PATH}" | grep -q .; then
             echo "No manifest changes; nothing to deploy."
             exit 0
           fi
 
-          git add "${GITOPS_PATH}"
+          git add "${GITOPS_PATH}" "${GITOPS_CONFIGMAP_PATH}"
           git commit -m "chore(rubinot): deploy rubinot-data ${{ steps.vars.outputs.version_tag }} (${{ steps.vars.outputs.short_sha }})"
           git push origin "${{ env.GITOPS_BRANCH }}"

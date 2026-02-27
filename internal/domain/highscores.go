@@ -2,11 +2,14 @@ package domain
 
 type Highscore struct {
 	Rank       int    `json:"rank"`
+	ID         int    `json:"id,omitempty"`
 	Name       string `json:"name"`
 	Vocation   string `json:"vocation,omitempty"`
+	VocationID int    `json:"vocation_id,omitempty"`
 	World      string `json:"world,omitempty"`
+	WorldID    int    `json:"world_id,omitempty"`
 	Level      int    `json:"level,omitempty"`
-	Value      int    `json:"value"`
+	Value      string `json:"value"`
 	Title      string `json:"title,omitempty"`
 	Traded     bool   `json:"traded,omitempty"`
 	AuctionURL string `json:"auction_url,omitempty"`
@@ -19,10 +22,12 @@ type HighscorePage struct {
 }
 
 type HighscoresResult struct {
-	World         string        `json:"world"`
-	Category      string        `json:"category"`
-	Vocation      string        `json:"vocation"`
-	HighscoreAge  int           `json:"highscore_age"`
-	HighscoreList []Highscore   `json:"highscore_list"`
-	HighscorePage HighscorePage `json:"highscore_page"`
+	World            string        `json:"world"`
+	Category         string        `json:"category"`
+	Vocation         string        `json:"vocation"`
+	HighscoreAge     int           `json:"highscore_age,omitempty"`
+	CachedAt         int64         `json:"cached_at,omitempty"`
+	HighscoreList    []Highscore   `json:"highscore_list"`
+	HighscorePage    HighscorePage `json:"highscore_page"`
+	AvailableSeasons []int         `json:"available_seasons,omitempty"`
 }

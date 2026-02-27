@@ -3,19 +3,13 @@ package scraper
 import (
 	"context"
 	"fmt"
-	"regexp"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/giovannirco/rubinot-data/internal/domain"
-	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
-)
-
-var (
-	transfersResultsPattern = regexp.MustCompile(`(?i)results:\s*([\d,.]+)`)
-	transfersEmptyPattern   = regexp.MustCompile(`(?i)no recent transfers found`)
 )
 
 type TransfersFilters struct {
@@ -23,6 +17,21 @@ type TransfersFilters struct {
 	WorldName string
 	MinLevel  int
 	Page      int
+}
+
+type transfersAPIResponse struct {
+	Transfers []struct {
+		ID            int         `json:"id"`
+		PlayerID      int         `json:"player_id"`
+		PlayerName    string      `json:"player_name"`
+		PlayerLevel   int         `json:"player_level"`
+		FromWorldID   int         `json:"from_world_id"`
+		ToWorldID     int         `json:"to_world_id"`
+		TransferredAt interface{} `json:"transferred_at"`
+	} `json:"transfers"`
+	TotalResults int `json:"totalResults"`
+	TotalPages   int `json:"totalPages"`
+	CurrentPage  int `json:"currentPage"`
 }
 
 func FetchTransfers(
@@ -34,19 +43,32 @@ func FetchTransfers(
 	ctx, span := tracer.Start(ctx, "scraper.FetchTransfers")
 	defer span.End()
 
-	sourceURL := buildTransfersURL(baseURL, filters)
+	page := filters.Page
+	if page <= 0 {
+		page = 1
+	}
+
+	query := url.Values{}
+	query.Set("page", strconv.Itoa(page))
+	if filters.WorldID > 0 {
+		query.Set("world", strconv.Itoa(filters.WorldID))
+	}
+	if filters.MinLevel > 0 {
+		query.Set("level", strconv.Itoa(filters.MinLevel))
+	}
+
+	sourceURL := fmt.Sprintf("%s/api/transfers?%s", strings.TrimRight(baseURL, "/"), query.Encode())
 	client := NewClient(opts)
 
 	span.SetAttributes(
 		attribute.String("rubinot.endpoint", "transfers"),
 		attribute.String("rubinot.source_url", sourceURL),
-		attribute.String("rubinot.world", filters.WorldName),
-		attribute.Int("rubinot.world_id", filters.WorldID),
-		attribute.Int("rubinot.page", filters.Page),
+		attribute.Int("rubinot.page", page),
 	)
 
 	started := time.Now()
-	htmlBody, err := client.Fetch(ctx, sourceURL)
+	var payload transfersAPIResponse
+	err := client.FetchJSON(ctx, sourceURL, &payload)
 	scrapeDuration.WithLabelValues("transfers").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("transfers", "error").Inc()
@@ -54,125 +76,38 @@ func FetchTransfers(
 	}
 	scrapeRequests.WithLabelValues("transfers", "ok").Inc()
 
-	parseStart := time.Now()
-	result, parseErr := parseTransfersHTML(filters, htmlBody)
-	parseDuration.WithLabelValues("transfers").Observe(time.Since(parseStart).Seconds())
-	if parseErr != nil {
-		return domain.TransfersResult{}, sourceURL, parseErr
+	parseStarted := time.Now()
+	entries := make([]domain.TransferEntry, 0, len(payload.Transfers))
+	for _, row := range payload.Transfers {
+		entries = append(entries, domain.TransferEntry{
+			ID:               row.ID,
+			PlayerID:         row.PlayerID,
+			PlayerName:       strings.TrimSpace(row.PlayerName),
+			Level:            row.PlayerLevel,
+			FormerWorld:      worldNameByID(row.FromWorldID),
+			FormerWorldID:    row.FromWorldID,
+			DestinationWorld: worldNameByID(row.ToWorldID),
+			DestWorldID:      row.ToWorldID,
+			TransferDate:     unixAnyToRFC3339(row.TransferredAt),
+		})
 	}
 
-	return result, sourceURL, nil
-}
-
-func buildTransfersURL(baseURL string, filters TransfersFilters) string {
-	sourceURL := fmt.Sprintf("%s/?subtopic=transferstatistics", strings.TrimRight(baseURL, "/"))
-	// TODO: AMBIGUOUS — upstream filter names changed over time; keep world/level/currentpage compatibility from existing contract.
-	if filters.WorldID > 0 {
-		sourceURL += fmt.Sprintf("&world=%d", filters.WorldID)
-	}
-	if filters.MinLevel > 0 {
-		sourceURL += fmt.Sprintf("&level=%d", filters.MinLevel)
-	}
-	if filters.Page > 1 {
-		sourceURL += fmt.Sprintf("&currentpage=%d", filters.Page)
-	}
-	return sourceURL
-}
-
-func parseTransfersHTML(filters TransfersFilters, html string) (domain.TransfersResult, error) {
-	doc, err := goquery.NewDocumentFromReader(strings.NewReader(html))
-	if err != nil {
-		return domain.TransfersResult{}, err
-	}
-
-	page := filters.Page
-	if page < 1 {
-		page = 1
-	}
 	result := domain.TransfersResult{
 		Filters: domain.TransferFilters{
-			World:    strings.TrimSpace(filters.WorldName),
+			World:    filters.WorldName,
 			MinLevel: filters.MinLevel,
 		},
-		Page:    page,
-		Entries: make([]domain.TransferEntry, 0),
+		Page:           payload.CurrentPage,
+		TotalTransfers: payload.TotalResults,
+		TotalPages:     payload.TotalPages,
+		Entries:        entries,
+	}
+	if result.Page == 0 {
+		result.Page = page
 	}
 
-	if transfersEmptyPattern.MatchString(strings.ToLower(doc.Text())) {
-		result.TotalTransfers = parseTransfersTotal(doc)
-		return result, nil
-	}
+	parseDuration.WithLabelValues("transfers").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("transfers").Set(float64(len(result.Entries)))
 
-	table := findTransfersTable(doc)
-	if table == nil || table.Length() == 0 {
-		return domain.TransfersResult{}, validation.NewError(validation.ErrorUpstreamUnknown, "transfers table not found", nil)
-	}
-
-	var parseErr error
-	table.Find("tr[bgcolor]").EachWithBreak(func(_ int, row *goquery.Selection) bool {
-		tds := row.Find("td")
-		if tds.Length() < 5 {
-			return true
-		}
-
-		playerName := strings.TrimSpace(tds.Eq(0).Text())
-		level := parseInt(strings.TrimSpace(tds.Eq(1).Text()))
-		formerWorld := strings.TrimSpace(tds.Eq(2).Text())
-		destinationWorld := strings.TrimSpace(tds.Eq(3).Text())
-		dateRaw := strings.TrimSpace(tds.Eq(4).Text())
-		if playerName == "" || dateRaw == "" {
-			return true
-		}
-
-		transferDate, dateErr := parseRubinotDateTimeToUTC(dateRaw)
-		if dateErr != nil {
-			parseErr = validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("invalid transfer date %q", dateRaw), dateErr)
-			return false
-		}
-
-		entry := domain.TransferEntry{
-			PlayerName:       playerName,
-			Level:            level,
-			FormerWorld:      formerWorld,
-			DestinationWorld: destinationWorld,
-			TransferDate:     transferDate,
-		}
-		result.Entries = append(result.Entries, entry)
-		return true
-	})
-
-	if parseErr != nil {
-		return domain.TransfersResult{}, parseErr
-	}
-
-	total := parseTransfersTotal(doc)
-	if total == 0 {
-		total = len(result.Entries)
-	}
-	result.TotalTransfers = total
-	return result, nil
-}
-
-func findTransfersTable(doc *goquery.Document) *goquery.Selection {
-	var table *goquery.Selection
-	doc.Find("table.TableContent").EachWithBreak(func(_ int, candidate *goquery.Selection) bool {
-		header := strings.ToLower(strings.Join(strings.Fields(candidate.Find("tr").First().Text()), " "))
-		if strings.Contains(header, "player name") &&
-			strings.Contains(header, "former world") &&
-			strings.Contains(header, "destination world") &&
-			strings.Contains(header, "transfer date") {
-			table = candidate
-			return false
-		}
-		return true
-	})
-	return table
-}
-
-func parseTransfersTotal(doc *goquery.Document) int {
-	match := transfersResultsPattern.FindStringSubmatch(doc.Text())
-	if len(match) < 2 {
-		return 0
-	}
-	return parseInt(match[1])
+	return result, sourceURL, nil
 }

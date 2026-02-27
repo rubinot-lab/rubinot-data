@@ -61,8 +61,8 @@ func TestParseHighscoresCategoryOptions(t *testing.T) {
 	html := `
 		<html><body>
 			<select name="category">
-				<option value="17">Achievements</option>
-				<option value="6">Experience Points</option>
+				<option value="13">Achievement Points</option>
+				<option value="1">Experience</option>
 				<option value="99">New Ranking</option>
 			</select>
 		</body></html>
@@ -76,7 +76,7 @@ func TestParseHighscoresCategoryOptions(t *testing.T) {
 		t.Fatalf("expected 3 categories, got %d", len(categories))
 	}
 
-	if categories[0].ID != 6 || categories[0].Slug != "experience" {
+	if categories[0].ID != 1 || categories[0].Slug != "experience" {
 		t.Fatalf("unexpected first category: %+v", categories[0])
 	}
 	if categories[2].ID != 99 || categories[2].Slug != "new-ranking" {
@@ -184,7 +184,7 @@ func TestResolveHighscoreCategory(t *testing.T) {
 	if !ok {
 		t.Fatal("expected exp alias to resolve")
 	}
-	if category.Slug != "experience" || category.ID != 6 {
+	if category.Slug != "experience" || category.ID != 1 {
 		t.Fatalf("unexpected category resolution: %+v", category)
 	}
 
@@ -223,7 +223,7 @@ func TestResolveHighscoreVocation(t *testing.T) {
 	if !ok {
 		t.Fatal("expected ek alias to resolve")
 	}
-	if knight.Name != "Knights" || knight.ProfessionID != 2 {
+	if knight.Name != "Knights" || knight.ProfessionID != 5 {
 		t.Fatalf("unexpected ek vocation resolution: %+v", knight)
 	}
 }

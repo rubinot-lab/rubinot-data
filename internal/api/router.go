@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultRubinotBaseURL  = "https://www.rubinot.com.br"
+	defaultRubinotBaseURL  = "https://rubinot.com.br"
 	defaultScrapeTimeoutMS = 120000
 	defaultServiceVersion  = "dev"
 )
@@ -132,20 +132,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/guilds/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getGuilds(c, getValidator())
 		}))
-		v1.GET("/house/:world/:house_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getHouse(c, getValidator())
-		}))
-		v1.GET("/houses/towns", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			validator := getValidator()
-			return endpointResult{
-				PayloadKey: "towns",
-				Payload:    validator.AllTowns(),
-				Sources:    []string{},
-			}, nil
-		}))
-		v1.GET("/houses/:world/:town", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getHouses(c, getValidator())
-		}))
+		v1.GET("/house/:world/:house_id", handleEndpoint(deprecatedHousesEndpoint))
+		v1.GET("/houses/towns", handleEndpoint(deprecatedHousesEndpoint))
+		v1.GET("/houses/:world/:town", handleEndpoint(deprecatedHousesEndpoint))
 	}
 
 	return router, nil
@@ -244,6 +233,14 @@ func getGuilds(c *gin.Context, validator *validation.Validator) (endpointResult,
 	}, nil
 }
 
+func deprecatedHousesEndpoint(_ *gin.Context) (endpointResult, error) {
+	return endpointResult{}, validation.NewError(
+		validation.ErrorEndpointDeprecated,
+		"houses endpoints are deprecated: house data is available via /v1/character/:name",
+		nil,
+	)
+}
+
 func getHouses(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
 	townInput := strings.TrimSpace(c.Param("town"))
@@ -332,7 +329,7 @@ func getHighscores(c *gin.Context, validator *validation.Validator) (endpointRes
 	vocationInput := strings.TrimSpace(c.Param("vocation"))
 	pageInput := strings.TrimSpace(c.Param("page"))
 
-	canonicalWorld, _, worldOK := validator.WorldExists(worldInput)
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
@@ -357,6 +354,7 @@ func getHighscores(c *gin.Context, validator *validation.Validator) (endpointRes
 		c.Request.Context(),
 		baseURL,
 		canonicalWorld,
+		worldID,
 		category,
 		vocation,
 		page,
@@ -653,7 +651,16 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
 
-	guildFilter := strings.TrimSpace(c.Query("guild"))
+	page := 1
+	pageInput := strings.TrimSpace(c.Query("page"))
+	if pageInput != "" {
+		parsedPage, pageErr := validation.ParsePage(pageInput)
+		if pageErr != nil {
+			return endpointResult{}, pageErr
+		}
+		page = parsedPage
+	}
+
 	levelFilter, levelErr := validation.ParseLevelFilter(c.Query("level"))
 	if levelErr != nil {
 		return endpointResult{}, levelErr
@@ -676,9 +683,9 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 		canonicalWorld,
 		worldID,
 		scraper.DeathsFilters{
-			Guild:    guildFilter,
 			MinLevel: levelFilter,
 			PvPOnly:  pvpOnly,
+			Page:     page,
 		},
 		resolvedOpts,
 	)
@@ -705,100 +712,50 @@ func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 		return nil, err
 	}
 
-	towns, err := discoverTowns(ctx, client, baseURL)
-	if err != nil {
-		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
-		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
-		return nil, err
-	}
-
-	categories, err := discoverCategories(ctx, client, baseURL, worlds[0].ID)
-	if err != nil {
-		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
-		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
-		return nil, err
-	}
+	validator := validation.NewValidator(worlds)
+	categories := validator.AllCategories()
 
 	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
 	scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
 	scraper.WorldsDiscovered.Set(float64(len(worlds)))
 	scraper.DiscoveredCount.WithLabelValues("worlds").Set(float64(len(worlds)))
-	scraper.DiscoveredCount.WithLabelValues("towns").Set(float64(len(towns)))
+	scraper.DiscoveredCount.WithLabelValues("towns").Set(0)
 	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(categories)))
-
-	validator := validation.NewValidator(worlds, towns...)
-	validator.ReplaceHighscoreCategories(categories)
 	return validator, nil
 }
 
 func discoverWorlds(ctx context.Context, client *scraper.Client, baseURL string) ([]validation.World, error) {
-	sourceURL := fmt.Sprintf("%s/?subtopic=latestdeaths", baseURL)
+	sourceURL := fmt.Sprintf("%s/api/worlds", baseURL)
 	started := time.Now()
-	html, err := client.Fetch(ctx, sourceURL)
+	var payload struct {
+		Worlds []struct {
+			ID   int    `json:"id"`
+			Name string `json:"name"`
+		} `json:"worlds"`
+	}
+	err := client.FetchJSON(ctx, sourceURL, &payload)
 	if err != nil {
 		scraper.DiscoveryTotal.WithLabelValues("worlds", "error").Inc()
 		scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
 		return nil, err
 	}
 
-	worlds, err := validation.ParseLatestDeathsWorldOptions(html)
-	if err != nil {
+	worlds := make([]validation.World, 0, len(payload.Worlds))
+	for _, row := range payload.Worlds {
+		if row.ID <= 0 || strings.TrimSpace(row.Name) == "" {
+			continue
+		}
+		worlds = append(worlds, validation.World{ID: row.ID, Name: strings.TrimSpace(row.Name)})
+	}
+	if len(worlds) == 0 {
 		scraper.DiscoveryTotal.WithLabelValues("worlds", "error").Inc()
 		scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
-		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator world bootstrap failed: %v", err), err)
+		return nil, validation.NewError(validation.ErrorUpstreamUnknown, "validator world bootstrap failed: no worlds discovered", nil)
 	}
 
 	scraper.DiscoveryTotal.WithLabelValues("worlds", "ok").Inc()
 	scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
 	return worlds, nil
-}
-
-func discoverTowns(ctx context.Context, client *scraper.Client, baseURL string) ([]validation.Town, error) {
-	sourceURL := fmt.Sprintf("%s/?subtopic=houses", baseURL)
-	started := time.Now()
-	html, err := client.Fetch(ctx, sourceURL)
-	if err != nil {
-		scraper.DiscoveryTotal.WithLabelValues("towns", "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues("towns").Observe(time.Since(started).Seconds())
-		return nil, err
-	}
-
-	towns, err := validation.ParseHousesTownOptions(html)
-	if err != nil {
-		scraper.DiscoveryTotal.WithLabelValues("towns", "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues("towns").Observe(time.Since(started).Seconds())
-		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator town bootstrap failed: %v", err), err)
-	}
-
-	scraper.DiscoveryTotal.WithLabelValues("towns", "ok").Inc()
-	scraper.DiscoveryDuration.WithLabelValues("towns").Observe(time.Since(started).Seconds())
-	return towns, nil
-}
-
-func discoverCategories(ctx context.Context, client *scraper.Client, baseURL string, bootstrapWorldID int) ([]validation.HighscoreCategory, error) {
-	sourceURL := fmt.Sprintf(
-		"%s/?subtopic=highscores&world=%d&category=6&currentpage=1&profession=0",
-		baseURL,
-		bootstrapWorldID,
-	)
-	started := time.Now()
-	html, err := client.Fetch(ctx, sourceURL)
-	if err != nil {
-		scraper.DiscoveryTotal.WithLabelValues("categories", "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues("categories").Observe(time.Since(started).Seconds())
-		return nil, err
-	}
-
-	categories, err := validation.ParseHighscoresCategoryOptions(html)
-	if err != nil {
-		scraper.DiscoveryTotal.WithLabelValues("categories", "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues("categories").Observe(time.Since(started).Seconds())
-		return nil, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("validator category bootstrap failed: %v", err), err)
-	}
-
-	scraper.DiscoveryTotal.WithLabelValues("categories", "ok").Inc()
-	scraper.DiscoveryDuration.WithLabelValues("categories").Observe(time.Since(started).Seconds())
-	return categories, nil
 }
 
 func startValidatorRefresh() {
@@ -829,6 +786,7 @@ func scrapeFetchOptions() scraper.FetchOptions {
 	return scraper.FetchOptions{
 		FlareSolverrURL: getEnv("FLARESOLVERR_URL", ""),
 		MaxTimeoutMs:    getEnvInt("SCRAPE_MAX_TIMEOUT_MS", defaultScrapeTimeoutMS),
+		CDPURL:          getEnv("CDP_URL", ""),
 	}
 }
 

@@ -115,3 +115,42 @@ func TestHandleEndpointMapsValidationError(t *testing.T) {
 		t.Fatalf("unexpected error payload: %+v", status)
 	}
 }
+
+func TestHandleEndpointNormalizesMaintenanceMessage(t *testing.T) {
+	t.Setenv("APP_VERSION", "v0.2.0")
+	t.Setenv("APP_COMMIT", "abc1234")
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/v1/test", handleEndpoint(func(_ *gin.Context) (endpointResult, error) {
+		return endpointResult{Sources: []string{"https://www.rubinot.com.br"}}, validation.NewError(validation.ErrorUpstreamMaintenanceMode, "internal maintenance detail", nil)
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/v1/test", nil)
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected status 503, got %d", rec.Code)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode JSON response: %v", err)
+	}
+	info, ok := body["information"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing information object in response: %+v", body)
+	}
+	status, ok := info["status"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing status object in response: %+v", info)
+	}
+	message, ok := status["message"].(string)
+	if !ok {
+		t.Fatalf("missing status.message payload: %+v", status)
+	}
+	if message != validation.UpstreamMaintenanceMessage {
+		t.Fatalf("expected message %q, got %q", validation.UpstreamMaintenanceMessage, message)
+	}
+}
