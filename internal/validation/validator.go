@@ -171,6 +171,23 @@ func (v *Validator) AllTowns() []Town {
 	return allTowns
 }
 
+func (v *Validator) AllWorlds() []World {
+	uniqueByID := make(map[int]World)
+	for _, world := range v.worldsByKey {
+		uniqueByID[world.ID] = world
+	}
+
+	allWorlds := make([]World, 0, len(uniqueByID))
+	for _, world := range uniqueByID {
+		allWorlds = append(allWorlds, world)
+	}
+
+	sort.Slice(allWorlds, func(i, j int) bool {
+		return allWorlds[i].ID < allWorlds[j].ID
+	})
+	return allWorlds
+}
+
 var defaultTowns = []Town{
 	{ID: 1, Name: "Venore"},
 	{ID: 2, Name: "Thais"},

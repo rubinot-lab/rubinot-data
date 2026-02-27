@@ -93,3 +93,84 @@ func TestFetchAllHighscoresFromAPI(t *testing.T) {
 		t.Fatalf("expected total pages 1, got %d", result.HighscorePage.TotalPages)
 	}
 }
+
+func TestFetchHighscoresAllWorldsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/highscores")
+		assertQuery(t, r, "world", "all")
+		assertQuery(t, r, "category", "experience")
+		assertQuery(t, r, "vocation", "0")
+		writeJSON(w, map[string]any{
+			"players": []map[string]any{
+				{"rank": 1, "id": 200, "name": "X", "level": 1100, "vocation": 6, "world_id": 15, "value": "1000000"},
+				{"rank": 2, "id": 201, "name": "Y", "level": 1090, "vocation": 8, "world_id": 11, "value": "999000"},
+			},
+			"totalCount": 2,
+			"cachedAt":   int64(1772042575929),
+		})
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	result, _, err := FetchHighscoresAllWorlds(
+		context.Background(),
+		baseURLOf(api),
+		validation.HighscoreCategory{ID: 1, Name: "Experience", Slug: "experience"},
+		validation.HighscoreVocation{Name: "(all)", ProfessionID: 0},
+		1,
+		testFetchOptionsWithCDP("", cdpSrv.URL),
+	)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if result.World != "all" {
+		t.Fatalf("expected world=all, got %q", result.World)
+	}
+	if len(result.HighscoreList) != 2 {
+		t.Fatalf("expected 2 highscores, got %d", len(result.HighscoreList))
+	}
+}
+
+func TestFetchAllHighscoresAllWorldsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/highscores")
+		assertQuery(t, r, "world", "all")
+		assertQuery(t, r, "category", "experience")
+		assertQuery(t, r, "vocation", "0")
+		writeJSON(w, map[string]any{
+			"players": []map[string]any{
+				{"rank": 1, "id": 200, "name": "X", "level": 1100, "vocation": 6, "world_id": 15, "value": "1000000"},
+				{"rank": 2, "id": 201, "name": "Y", "level": 1090, "vocation": 8, "world_id": 11, "value": "999000"},
+				{"rank": 3, "id": 202, "name": "Z", "level": 1080, "vocation": 7, "world_id": 17, "value": "998000"},
+			},
+			"totalCount": 3,
+			"cachedAt":   int64(1772042575929),
+		})
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	result, _, err := FetchAllHighscoresAllWorlds(
+		context.Background(),
+		baseURLOf(api),
+		validation.HighscoreCategory{ID: 1, Name: "Experience", Slug: "experience"},
+		validation.HighscoreVocation{Name: "(all)", ProfessionID: 0},
+		testFetchOptionsWithCDP("", cdpSrv.URL),
+	)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if result.World != "all" {
+		t.Fatalf("expected world=all, got %q", result.World)
+	}
+	if len(result.HighscoreList) != 3 {
+		t.Fatalf("expected 3 highscores, got %d", len(result.HighscoreList))
+	}
+	if result.HighscorePage.TotalPages != 1 {
+		t.Fatalf("expected total pages 1, got %d", result.HighscorePage.TotalPages)
+	}
+}
