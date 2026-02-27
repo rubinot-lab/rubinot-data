@@ -16,15 +16,21 @@ spec:
       securityContext:
         seccompProfile:
           type: RuntimeDefault
+      volumes:
+        - name: cdp-patch
+          configMap:
+            name: rubinot-data-cdp-patch
       containers:
         - name: api
           image: harbor.cddlabs.casa/giovannirco/rubinot-data:latest
           imagePullPolicy: Always
           env:
             - name: RUBINOT_BASE_URL
-              value: https://www.rubinot.com.br
+              value: https://rubinot.com.br
             - name: FLARESOLVERR_URL
-              value: http://flaresolverr.network.svc.cluster.local:8191/v1
+              value: http://localhost:8191/v1
+            - name: CDP_URL
+              value: ws://localhost:9222
             - name: SCRAPE_MAX_TIMEOUT_MS
               value: "120000"
             - name: SCRAPE_MAX_CONCURRENCY
@@ -46,14 +52,40 @@ spec:
             httpGet:
               path: /readyz
               port: 8080
-            initialDelaySeconds: 3
+            initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /healthz
               port: 8080
-            initialDelaySeconds: 10
+            initialDelaySeconds: 20
             periodSeconds: 20
+        - name: flaresolverr
+          image: ghcr.io/flaresolverr/flaresolverr:latest
+          env:
+            - name: PROMETHEUS_ENABLED
+              value: "false"
+            - name: LOG_LEVEL
+              value: info
+            - name: CDP_BIND_HOST
+              value: "0.0.0.0"
+            - name: CDP_PORT
+              value: "9222"
+          ports:
+            - containerPort: 8191
+            - containerPort: 9222
+          volumeMounts:
+            - name: cdp-patch
+              mountPath: /app/undetected_chromedriver/__init__.py
+              subPath: uc_patched_init.py
+              readOnly: true
+          resources:
+            requests:
+              memory: 512Mi
+              cpu: 250m
+            limits:
+              memory: 1Gi
+              cpu: "1"
 ---
 apiVersion: v1
 kind: Service
