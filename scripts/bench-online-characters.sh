@@ -1,71 +1,81 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+import json
+import sys
+import time
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-BASE_URL="${1:-http://localhost:18080}"
-WORLD="${2:-Belaria}"
-CONCURRENCY="${3:-10}"
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:18080"
+WORLD = sys.argv[2] if len(sys.argv) > 2 else "Belaria"
+CONCURRENCY = int(sys.argv[3]) if len(sys.argv) > 3 else 10
 
-echo "=== Online Characters Benchmark ==="
-echo "API: $BASE_URL"
-echo "World: $WORLD"
-echo "Concurrency: $CONCURRENCY"
-echo ""
+print("=== Online Characters Benchmark ===")
+print(f"API: {BASE_URL}")
+print(f"World: {WORLD}")
+print(f"Concurrency: {CONCURRENCY}")
+print()
 
-start_total=$(date +%s%N)
+total_start = time.monotonic()
 
-echo "[1/2] Fetching world online list..."
-start=$(date +%s%N)
-world_json=$(curl -sf "$BASE_URL/v1/world/$WORLD")
-elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
-echo "  Done in ${elapsed}ms"
+print("[1/2] Fetching world online list...")
+t = time.monotonic()
+resp = urllib.request.urlopen(f"{BASE_URL}/v1/world/{urllib.parse.quote(WORLD)}")
+world_data = json.loads(resp.read())
+elapsed = int((time.monotonic() - t) * 1000)
+print(f"  Done in {elapsed}ms")
 
-names=$(echo "$world_json" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-players = d['world']['players_online']
-for p in players:
-    print(p['name'])
-")
+players = world_data["world"]["players_online"]
+count = len(players)
+print(f"  Players online: {count}")
+print()
 
-count=$(echo "$names" | wc -l | tr -d ' ')
-echo "  Players online: $count"
-echo ""
 
-echo "[2/2] Fetching each character ($count requests, concurrency=$CONCURRENCY)..."
+def fetch_character(name):
+    encoded = urllib.parse.quote(name, safe="")
+    url = f"{BASE_URL}/v1/character/{encoded}"
+    try:
+        req = urllib.request.urlopen(url, timeout=30)
+        return name, req.status
+    except urllib.error.HTTPError as e:
+        return name, e.code
+    except Exception:
+        return name, 0
 
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
 
-echo "$names" > "$tmpdir/names.txt"
+print(f"[2/2] Fetching each character ({count} requests, concurrency={CONCURRENCY})...")
+t = time.monotonic()
 
-start=$(date +%s%N)
+results = {}
+with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+    futures = {pool.submit(fetch_character, p["name"]): p["name"] for p in players}
+    for future in as_completed(futures):
+        name, code = future.result()
+        results[name] = code
 
-xargs -P "$CONCURRENCY" -I{} bash -c '
-  name=$(python3 -c "import urllib.parse; print(urllib.parse.quote(\"{}\")")
-  code=$(curl -sf -o /dev/null -w "%{http_code}" "'"$BASE_URL"'/v1/character/$name" 2>/dev/null || echo "000")
-  echo "$code {}"
-' < "$tmpdir/names.txt" > "$tmpdir/results.txt"
+elapsed = int((time.monotonic() - t) * 1000)
 
-elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
+ok = sum(1 for c in results.values() if c == 200)
+fail = count - ok
 
-total_ok=$(grep -c "^200 " "$tmpdir/results.txt" || true)
-total_err=$(grep -cv "^200 " "$tmpdir/results.txt" || true)
+print(f"  Done in {elapsed}ms")
+print()
+print("=== Results ===")
+print(f"  Total characters: {count}")
+print(f"  Successful (200): {ok}")
+print(f"  Failed:           {fail}")
+print(f"  Wall time:        {elapsed}ms")
+if count > 0:
+    print(f"  Avg per char:     {elapsed // count}ms")
+    print(f"  Throughput:       {count / (elapsed / 1000):.1f} req/s")
 
-echo "  Done in ${elapsed}ms"
-echo ""
-echo "=== Results ==="
-echo "  Total characters: $count"
-echo "  Successful (200): $total_ok"
-echo "  Failed:           $total_err"
-echo "  Wall time:        ${elapsed}ms"
-echo "  Avg per char:     $(( elapsed / count ))ms"
-echo "  Throughput:       $(python3 -c "print(f'{$count / ($elapsed / 1000):.1f}')" ) req/s"
+total_elapsed = int((time.monotonic() - total_start) * 1000)
+print(f"  Total wall time:  {total_elapsed}ms")
 
-elapsed_total=$(( ($(date +%s%N) - start_total) / 1000000 ))
-echo "  Total wall time:  ${elapsed_total}ms"
-
-if [ "$total_err" -gt 0 ]; then
-  echo ""
-  echo "Failed requests:"
-  grep -v "^200 " "$tmpdir/results.txt" | head -20
-fi
+if fail > 0:
+    print()
+    print("  Non-200 codes:")
+    from collections import Counter
+    codes = Counter(c for c in results.values() if c != 200)
+    for code, n in codes.most_common():
+        print(f"    {code}: {n}")

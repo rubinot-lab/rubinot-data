@@ -1,83 +1,120 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/usr/bin/env python3
+import json
+import sys
+import time
+import urllib.parse
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-BASE_URL="${1:-http://localhost:18080}"
-WORLD="${2:-Belaria}"
-CONCURRENCY="${3:-10}"
+BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:18080"
+WORLD = sys.argv[2] if len(sys.argv) > 2 else "Belaria"
+CONCURRENCY = int(sys.argv[3]) if len(sys.argv) > 3 else 10
 
-echo "=== Highscores Benchmark ==="
-echo "API: $BASE_URL"
-echo "World: $WORLD"
-echo "Concurrency: $CONCURRENCY"
-echo ""
+print("=== Highscores Benchmark ===")
+print(f"API: {BASE_URL}")
+print(f"World: {WORLD}")
+print(f"Concurrency: {CONCURRENCY}")
+print()
 
-echo "[1/3] Fetching categories..."
-categories_json=$(curl -sf "$BASE_URL/v1/highscores/categories")
-categories=$(echo "$categories_json" | python3 -c "
-import json, sys
-d = json.load(sys.stdin)
-for c in d['categories']:
-    print(c['slug'])
-")
-cat_count=$(echo "$categories" | wc -l | tr -d ' ')
-echo "  Categories: $cat_count"
 
-echo ""
-echo "[2/3] Fetching page 1 of each category to discover total pages..."
+def fetch_json(url):
+    try:
+        resp = urllib.request.urlopen(url, timeout=30)
+        return json.loads(resp.read()), resp.status
+    except urllib.error.HTTPError as e:
+        return None, e.code
+    except Exception:
+        return None, 0
 
-tmpdir=$(mktemp -d)
-trap 'rm -rf "$tmpdir"' EXIT
 
-echo "$categories" | xargs -P "$CONCURRENCY" -I{} bash -c '
-  resp=$(curl -sf "'"$BASE_URL"'/v1/highscores/'"$WORLD"'/{}/all/1" 2>/dev/null || echo "{}")
-  pages=$(echo "$resp" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get(\"highscores\",{}).get(\"highscore_page\",{}).get(\"total_pages\",0))" 2>/dev/null || echo "0")
-  echo "{} $pages"
-' > "$tmpdir/page_counts.txt"
+def fetch_status(url):
+    try:
+        resp = urllib.request.urlopen(url, timeout=30)
+        resp.read()
+        return url, resp.status
+    except urllib.error.HTTPError as e:
+        return url, e.code
+    except Exception:
+        return url, 0
 
-total_requests=0
-while IFS=' ' read -r slug pages; do
-  for page in $(seq 1 "$pages"); do
-    echo "$slug $page"
-  done
-  total_requests=$((total_requests + pages))
-done < "$tmpdir/page_counts.txt" > "$tmpdir/requests.txt"
 
-echo ""
-echo "  Page counts per category:"
-while IFS=' ' read -r slug pages; do
-  printf "    %-25s %s pages\n" "$slug" "$pages"
-done < <(sort "$tmpdir/page_counts.txt")
+print("[1/3] Fetching categories...")
+data, _ = fetch_json(f"{BASE_URL}/v1/highscores/categories")
+slugs = [c["slug"] for c in data["categories"]]
+print(f"  Categories: {len(slugs)}")
+print()
 
-echo ""
-echo "[3/3] Fetching all $total_requests pages (concurrency=$CONCURRENCY)..."
+print("[2/3] Discovering total pages per category...")
+discovery_urls = {
+    slug: f"{BASE_URL}/v1/highscores/{urllib.parse.quote(WORLD)}/{slug}/all/1"
+    for slug in slugs
+}
 
-start=$(date +%s%N)
+pages_per_cat = {}
+with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+    futures = {}
+    for slug, url in discovery_urls.items():
+        futures[pool.submit(fetch_json, url)] = slug
+    for future in as_completed(futures):
+        slug = futures[future]
+        result, code = future.result()
+        if result and code == 200:
+            pages_per_cat[slug] = (
+                result.get("highscores", {})
+                .get("highscore_page", {})
+                .get("total_pages", 0)
+            )
+        else:
+            pages_per_cat[slug] = 0
 
-xargs -P "$CONCURRENCY" -I{} bash -c '
-  slug=$(echo "{}" | cut -d" " -f1)
-  page=$(echo "{}" | cut -d" " -f2)
-  code=$(curl -sf -o /dev/null -w "%{http_code}" "'"$BASE_URL"'/v1/highscores/'"$WORLD"'/$slug/all/$page" 2>/dev/null || echo "000")
-  echo "$code $slug $page"
-' < "$tmpdir/requests.txt" > "$tmpdir/results.txt"
+print("  Pages per category:")
+for slug in slugs:
+    pages = pages_per_cat.get(slug, 0)
+    print(f"    {slug:<25} {pages} pages")
 
-elapsed=$(( ($(date +%s%N) - start) / 1000000 ))
+fetch_urls = []
+for slug in slugs:
+    pages = pages_per_cat.get(slug, 0)
+    for page in range(1, pages + 1):
+        fetch_urls.append(
+            f"{BASE_URL}/v1/highscores/{urllib.parse.quote(WORLD)}/{slug}/all/{page}"
+        )
 
-total_ok=$(grep -c "^200 " "$tmpdir/results.txt" || true)
-total_err=$(grep -cv "^200 " "$tmpdir/results.txt" || true)
+total_requests = len(fetch_urls)
+print(f"\n  Total requests: {total_requests}")
+print()
 
-echo "  Done in ${elapsed}ms"
-echo ""
-echo "=== Results ==="
-echo "  Categories:       $cat_count"
-echo "  Total pages:      $total_requests"
-echo "  Successful (200): $total_ok"
-echo "  Failed:           $total_err"
-echo "  Wall time:        ${elapsed}ms"
-echo "  Avg per page:     $(( elapsed / (total_requests > 0 ? total_requests : 1) ))ms"
-echo "  Throughput:       $(python3 -c "print(f'{$total_requests / ($elapsed / 1000):.1f}')" ) req/s"
+print(f"[3/3] Fetching all {total_requests} pages (concurrency={CONCURRENCY})...")
+t = time.monotonic()
 
-if [ "$total_err" -gt 0 ]; then
-  echo ""
-  echo "Failed requests:"
-  grep -v "^200 " "$tmpdir/results.txt" | head -20
-fi
+results = {}
+with ThreadPoolExecutor(max_workers=CONCURRENCY) as pool:
+    futures = {pool.submit(fetch_status, url): url for url in fetch_urls}
+    for future in as_completed(futures):
+        url, code = future.result()
+        results[url] = code
+
+elapsed = int((time.monotonic() - t) * 1000)
+
+ok = sum(1 for c in results.values() if c == 200)
+fail = total_requests - ok
+
+print(f"  Done in {elapsed}ms")
+print()
+print("=== Results ===")
+print(f"  Categories:       {len(slugs)}")
+print(f"  Total pages:      {total_requests}")
+print(f"  Successful (200): {ok}")
+print(f"  Failed:           {fail}")
+print(f"  Wall time:        {elapsed}ms")
+if total_requests > 0:
+    print(f"  Avg per page:     {elapsed // total_requests}ms")
+    print(f"  Throughput:       {total_requests / (elapsed / 1000):.1f} req/s")
+
+if fail > 0:
+    print()
+    print("  Non-200 codes:")
+    from collections import Counter
+    codes = Counter(c for c in results.values() if c != 200)
+    for code, n in codes.most_common():
+        print(f"    {code}: {n}")
