@@ -10,8 +10,15 @@ type GuildListEntry struct {
 }
 
 type GuildsResult struct {
-	World     string           `json:"world"`
-	Guilds    []GuildListEntry `json:"guilds,omitempty"`
-	Active    []GuildListEntry `json:"active,omitempty"`
-	Formation []GuildListEntry `json:"formation,omitempty"`
+	World      string            `json:"world"`
+	Guilds     []GuildListEntry  `json:"guilds,omitempty"`
+	Active     []GuildListEntry  `json:"active,omitempty"`
+	Formation  []GuildListEntry  `json:"formation,omitempty"`
+	Pagination *GuildsPagination `json:"pagination,omitempty"`
+}
+
+type GuildsPagination struct {
+	CurrentPage int `json:"current_page"`
+	TotalPages  int `json:"total_pages"`
+	TotalCount  int `json:"total_count"`
 }

@@ -12,7 +12,7 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/bazaar":
 			assertQuery(t, r, "page", "1")
-			assertQuery(t, r, "limit", "25")
+			assertQuery(t, r, "limit", "50")
 			writeJSON(w, map[string]any{
 				"auctions": []map[string]any{{
 					"id":                166676,
@@ -44,12 +44,14 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 					"highlightItems":    []map[string]any{},
 					"highlightAugments": []map[string]any{},
 				}},
-				"pagination": map[string]any{"page": 1, "limit": 25, "total": 1661, "totalPages": 67},
+				"pagination": map[string]any{"page": 1, "limit": 50, "total": 1661, "totalPages": 34},
 			})
 		case "/api/bazaar/history":
+			assertQuery(t, r, "page", "1")
+			assertQuery(t, r, "limit", "50")
 			writeJSON(w, map[string]any{
 				"auctions":   []map[string]any{},
-				"pagination": map[string]any{"page": 1, "limit": 25, "total": 15535, "totalPages": 622},
+				"pagination": map[string]any{"page": 1, "limit": 50, "total": 15535, "totalPages": 311},
 			})
 		case "/api/bazaar/193226":
 			writeJSON(w, map[string]any{
@@ -80,7 +82,7 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history auctions error: %v", err)
 	}
-	if history.TotalPages != 622 {
+	if history.TotalPages != 311 {
 		t.Fatalf("unexpected history payload: %+v", history)
 	}
 
@@ -90,5 +92,82 @@ func TestFetchCurrentAuctionsFromAPI(t *testing.T) {
 	}
 	if detail.AuctionID != 193226 || detail.CharacterName != "Terah" {
 		t.Fatalf("unexpected detail payload: %+v", detail)
+	}
+}
+
+func TestFetchAllAuctionsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/bazaar":
+			page := mustAtoi(t, r.URL.Query().Get("page"))
+			assertQuery(t, r, "limit", "50")
+			writeJSON(w, map[string]any{
+				"auctions": []map[string]any{{
+					"id":           100 + page,
+					"state":        1,
+					"stateName":    "active",
+					"name":         "Current",
+					"level":        100,
+					"vocation":     6,
+					"vocationName": "Elder Druid",
+					"sex":          0,
+					"worldId":      15,
+					"worldName":    "Belaria",
+				}},
+				"pagination": map[string]any{"page": page, "limit": 50, "total": 3, "totalPages": 3},
+			})
+		case "/api/bazaar/history":
+			page := mustAtoi(t, r.URL.Query().Get("page"))
+			assertQuery(t, r, "limit", "50")
+			writeJSON(w, map[string]any{
+				"auctions": []map[string]any{{
+					"id":           200 + page,
+					"state":        2,
+					"stateName":    "finished",
+					"name":         "History",
+					"level":        100,
+					"vocation":     6,
+					"vocationName": "Elder Druid",
+					"sex":          0,
+					"worldId":      15,
+					"worldName":    "Belaria",
+				}},
+				"pagination": map[string]any{"page": page, "limit": 50, "total": 2, "totalPages": 2},
+			})
+		default:
+			failUnexpectedRequest(t, r)
+		}
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	current, sources, err := FetchAllCurrentAuctions(context.Background(), baseURLOf(api), testFetchOptionsWithCDP("", cdpSrv.URL))
+	if err != nil {
+		t.Fatalf("all current auctions error: %v", err)
+	}
+	if len(current.Entries) != 3 {
+		t.Fatalf("expected 3 current entries, got %d", len(current.Entries))
+	}
+	if len(sources) != 3 {
+		t.Fatalf("expected 3 current sources, got %d", len(sources))
+	}
+	if current.TotalPages != 1 {
+		t.Fatalf("expected total pages 1, got %d", current.TotalPages)
+	}
+
+	history, historySources, err := FetchAllAuctionHistory(context.Background(), baseURLOf(api), testFetchOptionsWithCDP("", cdpSrv.URL))
+	if err != nil {
+		t.Fatalf("all history auctions error: %v", err)
+	}
+	if len(history.Entries) != 2 {
+		t.Fatalf("expected 2 history entries, got %d", len(history.Entries))
+	}
+	if len(historySources) != 2 {
+		t.Fatalf("expected 2 history sources, got %d", len(historySources))
+	}
+	if history.TotalPages != 1 {
+		t.Fatalf("expected history total pages 1, got %d", history.TotalPages)
 	}
 }

@@ -49,3 +49,49 @@ func TestFetchTransfersFromAPI(t *testing.T) {
 		t.Fatalf("unexpected transfer entries: %+v", result.Entries)
 	}
 }
+
+func TestFetchAllTransfersFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/transfers")
+		assertQuery(t, r, "world", "15")
+		assertQuery(t, r, "level", "500")
+		page := mustAtoi(t, r.URL.Query().Get("page"))
+		writeJSON(w, map[string]any{
+			"transfers": []map[string]any{{
+				"id":             page,
+				"player_id":      456,
+				"player_name":    "Hero",
+				"player_level":   500,
+				"from_world_id":  11,
+				"to_world_id":    15,
+				"transferred_at": int64(1772043027000),
+			}},
+			"totalResults": 3,
+			"totalPages":   3,
+			"currentPage":  page,
+		})
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	result, sources, err := FetchAllTransfers(
+		context.Background(),
+		baseURLOf(api),
+		TransfersFilters{WorldID: 15, WorldName: "Belaria", MinLevel: 500},
+		testFetchOptionsWithCDP("", cdpSrv.URL),
+	)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(result.Entries) != 3 {
+		t.Fatalf("expected 3 transfer entries, got %d", len(result.Entries))
+	}
+	if len(sources) != 3 {
+		t.Fatalf("expected 3 sources, got %d", len(sources))
+	}
+	if result.TotalPages != 1 {
+		t.Fatalf("expected total pages 1, got %d", result.TotalPages)
+	}
+}

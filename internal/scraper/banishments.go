@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -68,6 +69,96 @@ func FetchBanishments(
 	scrapeRequests.WithLabelValues("banishments", "ok").Inc()
 
 	parseStarted := time.Now()
+	entries := mapBanishmentEntries(payload)
+
+	result := domain.BanishmentsResult{
+		World:      worldName,
+		Page:       payload.CurrentPage,
+		TotalBans:  payload.TotalCount,
+		TotalPages: payload.TotalPages,
+		Entries:    entries,
+	}
+	if result.Page == 0 {
+		result.Page = page
+	}
+
+	parseDuration.WithLabelValues("banishments").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("banishments").Set(float64(len(result.Entries)))
+
+	return result, sourceURL, nil
+}
+
+func FetchAllBanishments(
+	ctx context.Context,
+	baseURL,
+	worldName string,
+	worldID int,
+	opts FetchOptions,
+) (domain.BanishmentsResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchAllBanishments")
+	defer span.End()
+
+	client := NewClient(opts)
+	buildURL := func(page int) string {
+		query := url.Values{}
+		query.Set("world", strconv.Itoa(worldID))
+		query.Set("page", strconv.Itoa(page))
+		return fmt.Sprintf("%s/api/bans?%s", strings.TrimRight(baseURL, "/"), query.Encode())
+	}
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "banishments"),
+		attribute.String("rubinot.world", worldName),
+	)
+
+	started := time.Now()
+	bodies, sources, err := client.FetchAllPages(
+		ctx,
+		buildURL(1),
+		buildURL,
+		func(body string) (int, error) {
+			return banishmentsTotalPagesFromBody(body)
+		},
+	)
+	scrapeDuration.WithLabelValues("banishments").Observe(time.Since(started).Seconds())
+	if err != nil {
+		scrapeRequests.WithLabelValues("banishments", "error").Inc()
+		return domain.BanishmentsResult{}, sources, err
+	}
+	scrapeRequests.WithLabelValues("banishments", "ok").Inc()
+
+	parseStarted := time.Now()
+	entries := make([]domain.BanishmentEntry, 0)
+	totalBans := 0
+	for idx, body := range bodies {
+		var payload banishmentsAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			ParseErrors.WithLabelValues("banishments", "decode_error").Inc()
+			return domain.BanishmentsResult{}, sources, parseErr
+		}
+		if idx == 0 {
+			totalBans = payload.TotalCount
+		}
+		entries = append(entries, mapBanishmentEntries(payload)...)
+	}
+	if totalBans <= 0 {
+		totalBans = len(entries)
+	}
+
+	result := domain.BanishmentsResult{
+		World:      worldName,
+		Page:       1,
+		TotalBans:  totalBans,
+		TotalPages: 1,
+		Entries:    entries,
+	}
+
+	parseDuration.WithLabelValues("banishments").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("banishments").Set(float64(len(result.Entries)))
+	return result, sources, nil
+}
+
+func mapBanishmentEntries(payload banishmentsAPIResponse) []domain.BanishmentEntry {
 	entries := make([]domain.BanishmentEntry, 0, len(payload.Bans))
 	for _, row := range payload.Bans {
 		permanent := row.IsPermanent || strings.TrimSpace(row.ExpiresAt) == "-1"
@@ -90,20 +181,18 @@ func FetchBanishments(
 			BannedBy:    strings.TrimSpace(row.BannedBy),
 		})
 	}
+	return entries
+}
 
-	result := domain.BanishmentsResult{
-		World:      worldName,
-		Page:       payload.CurrentPage,
-		TotalBans:  payload.TotalCount,
-		TotalPages: payload.TotalPages,
-		Entries:    entries,
+func banishmentsTotalPagesFromBody(body string) (int, error) {
+	var payload struct {
+		TotalPages int `json:"totalPages"`
 	}
-	if result.Page == 0 {
-		result.Page = page
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return 0, fmt.Errorf("decode banishments pagination: %w", err)
 	}
-
-	parseDuration.WithLabelValues("banishments").Observe(time.Since(parseStarted).Seconds())
-	ParseItems.WithLabelValues("banishments").Set(float64(len(result.Entries)))
-
-	return result, sourceURL, nil
+	if payload.TotalPages <= 0 {
+		return 1, nil
+	}
+	return payload.TotalPages, nil
 }

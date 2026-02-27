@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -77,20 +78,7 @@ func FetchTransfers(
 	scrapeRequests.WithLabelValues("transfers", "ok").Inc()
 
 	parseStarted := time.Now()
-	entries := make([]domain.TransferEntry, 0, len(payload.Transfers))
-	for _, row := range payload.Transfers {
-		entries = append(entries, domain.TransferEntry{
-			ID:               row.ID,
-			PlayerID:         row.PlayerID,
-			PlayerName:       strings.TrimSpace(row.PlayerName),
-			Level:            row.PlayerLevel,
-			FormerWorld:      worldNameByID(row.FromWorldID),
-			FormerWorldID:    row.FromWorldID,
-			DestinationWorld: worldNameByID(row.ToWorldID),
-			DestWorldID:      row.ToWorldID,
-			TransferDate:     unixAnyToRFC3339(row.TransferredAt),
-		})
-	}
+	entries := mapTransferEntries(payload)
 
 	result := domain.TransfersResult{
 		Filters: domain.TransferFilters{
@@ -110,4 +98,112 @@ func FetchTransfers(
 	ParseItems.WithLabelValues("transfers").Set(float64(len(result.Entries)))
 
 	return result, sourceURL, nil
+}
+
+func FetchAllTransfers(
+	ctx context.Context,
+	baseURL string,
+	filters TransfersFilters,
+	opts FetchOptions,
+) (domain.TransfersResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchAllTransfers")
+	defer span.End()
+
+	client := NewClient(opts)
+	buildURL := func(page int) string {
+		query := url.Values{}
+		query.Set("page", strconv.Itoa(page))
+		if filters.WorldID > 0 {
+			query.Set("world", strconv.Itoa(filters.WorldID))
+		}
+		if filters.MinLevel > 0 {
+			query.Set("level", strconv.Itoa(filters.MinLevel))
+		}
+		return fmt.Sprintf("%s/api/transfers?%s", strings.TrimRight(baseURL, "/"), query.Encode())
+	}
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "transfers"),
+		attribute.String("rubinot.source_url", buildURL(1)),
+	)
+
+	started := time.Now()
+	bodies, sources, err := client.FetchAllPages(
+		ctx,
+		buildURL(1),
+		buildURL,
+		func(body string) (int, error) {
+			return transfersTotalPagesFromBody(body)
+		},
+	)
+	scrapeDuration.WithLabelValues("transfers").Observe(time.Since(started).Seconds())
+	if err != nil {
+		scrapeRequests.WithLabelValues("transfers", "error").Inc()
+		return domain.TransfersResult{}, sources, err
+	}
+	scrapeRequests.WithLabelValues("transfers", "ok").Inc()
+
+	parseStarted := time.Now()
+	entries := make([]domain.TransferEntry, 0)
+	totalTransfers := 0
+	for idx, body := range bodies {
+		var payload transfersAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			ParseErrors.WithLabelValues("transfers", "decode_error").Inc()
+			return domain.TransfersResult{}, sources, parseErr
+		}
+		if idx == 0 {
+			totalTransfers = payload.TotalResults
+		}
+		entries = append(entries, mapTransferEntries(payload)...)
+	}
+	if totalTransfers <= 0 {
+		totalTransfers = len(entries)
+	}
+
+	result := domain.TransfersResult{
+		Filters: domain.TransferFilters{
+			World:    filters.WorldName,
+			MinLevel: filters.MinLevel,
+		},
+		Page:           1,
+		TotalTransfers: totalTransfers,
+		TotalPages:     1,
+		Entries:        entries,
+	}
+
+	parseDuration.WithLabelValues("transfers").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("transfers").Set(float64(len(result.Entries)))
+	return result, sources, nil
+}
+
+func mapTransferEntries(payload transfersAPIResponse) []domain.TransferEntry {
+	entries := make([]domain.TransferEntry, 0, len(payload.Transfers))
+	for _, row := range payload.Transfers {
+		entries = append(entries, domain.TransferEntry{
+			ID:               row.ID,
+			PlayerID:         row.PlayerID,
+			PlayerName:       strings.TrimSpace(row.PlayerName),
+			Level:            row.PlayerLevel,
+			FormerWorld:      worldNameByID(row.FromWorldID),
+			FormerWorldID:    row.FromWorldID,
+			DestinationWorld: worldNameByID(row.ToWorldID),
+			DestWorldID:      row.ToWorldID,
+			TransferDate:     unixAnyToRFC3339(row.TransferredAt),
+		})
+	}
+	return entries
+}
+
+func transfersTotalPagesFromBody(body string) (int, error) {
+	var payload struct {
+		TotalPages int `json:"totalPages"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return 0, fmt.Errorf("decode transfers pagination: %w", err)
+	}
+	if payload.TotalPages <= 0 {
+		return 1, nil
+	}
+	return payload.TotalPages, nil
 }

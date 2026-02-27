@@ -58,3 +58,52 @@ func TestFetchDeathsFromAPI(t *testing.T) {
 		t.Fatalf("unexpected victim %+v", result.Entries[0].Victim)
 	}
 }
+
+func TestFetchAllDeathsFromAPI(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/deaths")
+		assertQuery(t, r, "world", "15")
+		page := mustAtoi(t, r.URL.Query().Get("page"))
+		writeJSON(w, map[string]any{
+			"deaths": []map[string]any{
+				{
+					"player_id":            467572 + page,
+					"time":                 "1772043027",
+					"level":                341,
+					"killed_by":            "sphinx",
+					"is_player":            0,
+					"mostdamage_by":        "sphinx",
+					"mostdamage_is_player": 0,
+					"victim":               "Victim",
+					"world_id":             15,
+				},
+			},
+			"pagination": map[string]any{"currentPage": page, "totalPages": 3, "totalCount": 3, "itemsPerPage": 50},
+		})
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	result, sources, err := FetchAllDeaths(
+		context.Background(),
+		baseURLOf(api),
+		"Belaria",
+		15,
+		DeathsFilters{},
+		testFetchOptionsWithCDP("", cdpSrv.URL),
+	)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(result.Entries) != 3 {
+		t.Fatalf("expected 3 death entries, got %d", len(result.Entries))
+	}
+	if len(sources) != 3 {
+		t.Fatalf("expected 3 sources, got %d", len(sources))
+	}
+	if result.Pagination.TotalPages != 1 {
+		t.Fatalf("expected total pages 1, got %d", result.Pagination.TotalPages)
+	}
+}

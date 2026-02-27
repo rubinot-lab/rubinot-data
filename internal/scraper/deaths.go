@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -91,6 +92,119 @@ func FetchDeaths(
 	ParseItems.WithLabelValues("deaths").Set(float64(len(result.Entries)))
 
 	return result, sourceURL, nil
+}
+
+func FetchAllDeaths(
+	ctx context.Context,
+	baseURL,
+	worldName string,
+	worldID int,
+	filters DeathsFilters,
+	opts FetchOptions,
+) (domain.DeathsResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchAllDeaths")
+	defer span.End()
+
+	client := NewClient(opts)
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "deaths"),
+		attribute.String("rubinot.world", worldName),
+		attribute.Int("rubinot.world_id", worldID),
+	)
+
+	buildURL := func(page int) string {
+		query := url.Values{}
+		query.Set("world", strconv.Itoa(worldID))
+		query.Set("page", strconv.Itoa(page))
+		if filters.MinLevel > 0 {
+			query.Set("level", strconv.Itoa(filters.MinLevel))
+		}
+		if filters.PvPOnly != nil {
+			query.Set("pvp", strconv.FormatBool(*filters.PvPOnly))
+		}
+		if strings.TrimSpace(filters.Guild) != "" {
+			query.Set("guild", strings.TrimSpace(filters.Guild))
+		}
+		return fmt.Sprintf("%s/api/deaths?%s", strings.TrimRight(baseURL, "/"), query.Encode())
+	}
+
+	started := time.Now()
+	bodies, sources, err := client.FetchAllPages(
+		ctx,
+		buildURL(1),
+		buildURL,
+		func(body string) (int, error) {
+			return deathsTotalPagesFromBody(body)
+		},
+	)
+	scrapeDuration.WithLabelValues("deaths").Observe(time.Since(started).Seconds())
+	if err != nil {
+		scrapeRequests.WithLabelValues("deaths", "error").Inc()
+		return domain.DeathsResult{}, sources, err
+	}
+	scrapeRequests.WithLabelValues("deaths", "ok").Inc()
+
+	parseStarted := time.Now()
+	entries := make([]domain.DeathEntry, 0)
+	totalDeaths := 0
+	itemsPerPage := 0
+	for idx, body := range bodies {
+		var payload deathsAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			ParseErrors.WithLabelValues("deaths", "decode_error").Inc()
+			return domain.DeathsResult{}, sources, parseErr
+		}
+		if idx == 0 {
+			totalDeaths = payload.Pagination.TotalCount
+			itemsPerPage = payload.Pagination.ItemsPerPage
+		}
+
+		pageFilters := filters
+		pageFilters.Page = idx + 1
+		pageResult := mapDeathsResponse(worldName, pageFilters, payload)
+		entries = append(entries, pageResult.Entries...)
+	}
+	if totalDeaths <= 0 {
+		totalDeaths = len(entries)
+	}
+
+	result := domain.DeathsResult{
+		World: worldName,
+		Filters: domain.DeathFilters{
+			Guild:    filters.Guild,
+			MinLevel: filters.MinLevel,
+			PvPOnly:  filters.PvPOnly,
+			Page:     1,
+		},
+		Entries:     entries,
+		TotalDeaths: totalDeaths,
+		Pagination: domain.DeathPagination{
+			CurrentPage:  1,
+			TotalPages:   1,
+			TotalCount:   totalDeaths,
+			ItemsPerPage: itemsPerPage,
+		},
+	}
+
+	parseDuration.WithLabelValues("deaths").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("deaths").Set(float64(len(result.Entries)))
+	return result, sources, nil
+}
+
+func deathsTotalPagesFromBody(body string) (int, error) {
+	var payload struct {
+		Pagination struct {
+			TotalPages int `json:"totalPages"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return 0, fmt.Errorf("decode deaths pagination: %w", err)
+	}
+	if payload.Pagination.TotalPages <= 0 {
+		return 1, nil
+	}
+	return payload.Pagination.TotalPages, nil
 }
 
 func mapDeathsResponse(worldName string, filters DeathsFilters, payload deathsAPIResponse) domain.DeathsResult {

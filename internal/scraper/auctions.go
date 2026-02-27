@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -12,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 )
 
-const auctionListLimit = 25
+const auctionListLimit = 50
 
 type auctionListAPIResponse struct {
 	Auctions []struct {
@@ -147,6 +148,22 @@ func FetchAuctionHistory(
 	return fetchAuctionsList(ctx, baseURL, "history", page, opts)
 }
 
+func FetchAllCurrentAuctions(
+	ctx context.Context,
+	baseURL string,
+	opts FetchOptions,
+) (domain.AuctionsResult, []string, error) {
+	return fetchAllAuctionsList(ctx, baseURL, "current", opts)
+}
+
+func FetchAllAuctionHistory(
+	ctx context.Context,
+	baseURL string,
+	opts FetchOptions,
+) (domain.AuctionsResult, []string, error) {
+	return fetchAllAuctionsList(ctx, baseURL, "history", opts)
+}
+
 func fetchAuctionsList(
 	ctx context.Context,
 	baseURL string,
@@ -161,15 +178,7 @@ func fetchAuctionsList(
 		page = 1
 	}
 
-	path := "/api/bazaar"
-	if auctionType == "history" {
-		path = "/api/bazaar/history"
-	}
-
-	query := url.Values{}
-	query.Set("page", strconv.Itoa(page))
-	query.Set("limit", strconv.Itoa(auctionListLimit))
-	sourceURL := fmt.Sprintf("%s%s?%s", strings.TrimRight(baseURL, "/"), path, query.Encode())
+	sourceURL := buildAuctionListURL(baseURL, auctionType, page)
 	client := NewClient(opts)
 
 	span.SetAttributes(
@@ -215,6 +224,108 @@ func fetchAuctionsList(
 	parseDuration.WithLabelValues("auctions").Observe(time.Since(parseStarted).Seconds())
 	ParseItems.WithLabelValues("auctions").Set(float64(len(result.Entries)))
 	return result, sourceURL, nil
+}
+
+func fetchAllAuctionsList(
+	ctx context.Context,
+	baseURL string,
+	auctionType string,
+	opts FetchOptions,
+) (domain.AuctionsResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.fetchAllAuctionsList")
+	defer span.End()
+
+	client := NewClient(opts)
+	buildURL := func(page int) string {
+		return buildAuctionListURL(baseURL, auctionType, page)
+	}
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "auctions"),
+		attribute.String("rubinot.type", auctionType),
+	)
+
+	started := time.Now()
+	bodies, sources, err := client.FetchAllPages(
+		ctx,
+		buildURL(1),
+		buildURL,
+		func(body string) (int, error) {
+			return auctionsTotalPagesFromBody(body)
+		},
+	)
+	scrapeDuration.WithLabelValues("auctions").Observe(time.Since(started).Seconds())
+	if err != nil {
+		scrapeRequests.WithLabelValues("auctions", "error").Inc()
+		return domain.AuctionsResult{}, sources, err
+	}
+	scrapeRequests.WithLabelValues("auctions", "ok").Inc()
+
+	parseStarted := time.Now()
+	entries := make([]domain.AuctionEntry, 0)
+	totalResults := 0
+	for idx, body := range bodies {
+		var payload auctionListAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			ParseErrors.WithLabelValues("auctions", "decode_error").Inc()
+			return domain.AuctionsResult{}, sources, parseErr
+		}
+		if idx == 0 {
+			totalResults = payload.Pagination.Total
+		}
+
+		for _, row := range payload.Auctions {
+			entries = append(entries, mapAuctionListEntry(row))
+		}
+	}
+	if totalResults <= 0 {
+		totalResults = len(entries)
+	}
+
+	result := domain.AuctionsResult{
+		Type:         auctionType,
+		Page:         1,
+		TotalResults: totalResults,
+		TotalPages:   1,
+		Entries:      entries,
+		Pagination: &domain.AuctionsPagination{
+			Page:       1,
+			Limit:      auctionListLimit,
+			Total:      totalResults,
+			TotalPages: 1,
+		},
+	}
+
+	parseDuration.WithLabelValues("auctions").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("auctions").Set(float64(len(result.Entries)))
+	return result, sources, nil
+}
+
+func buildAuctionListURL(baseURL string, auctionType string, page int) string {
+	path := "/api/bazaar"
+	if auctionType == "history" {
+		path = "/api/bazaar/history"
+	}
+
+	query := url.Values{}
+	query.Set("page", strconv.Itoa(page))
+	query.Set("limit", strconv.Itoa(auctionListLimit))
+	return fmt.Sprintf("%s%s?%s", strings.TrimRight(baseURL, "/"), path, query.Encode())
+}
+
+func auctionsTotalPagesFromBody(body string) (int, error) {
+	var payload struct {
+		Pagination struct {
+			TotalPages int `json:"totalPages"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal([]byte(body), &payload); err != nil {
+		return 0, fmt.Errorf("decode auctions pagination: %w", err)
+	}
+	if payload.Pagination.TotalPages <= 0 {
+		return 1, nil
+	}
+	return payload.Pagination.TotalPages, nil
 }
 
 func FetchAuctionDetail(
