@@ -308,21 +308,39 @@ func (c *Client) fetchViaCDP(ctx context.Context, cdp *CDPClient, apiURL string)
 		fetchPath += "?" + parsed.RawQuery
 	}
 
-	started := time.Now()
-	body, err := cdp.Fetch(ctx, fetchPath)
-	CDPFetchDuration.Observe(time.Since(started).Seconds())
+	const maxRetries = 3
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
 
-	if err != nil {
-		CDPFetchRequests.WithLabelValues("error").Inc()
-		globalCDPMu.Lock()
-		globalCDPReady = false
-		globalCDPMu.Unlock()
-		return "", validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP fetch failed: %v", err), err)
+		started := time.Now()
+		body, err := cdp.Fetch(ctx, fetchPath)
+		CDPFetchDuration.Observe(time.Since(started).Seconds())
+
+		if err != nil {
+			CDPFetchRequests.WithLabelValues("error").Inc()
+			globalCDPMu.Lock()
+			globalCDPReady = false
+			globalCDPMu.Unlock()
+			lastErr = validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP fetch failed: %v", err), err)
+			continue
+		}
+
+		trimmed := strings.TrimSpace(body)
+		if len(trimmed) == 0 || trimmed[0] != '{' && trimmed[0] != '[' {
+			CDPFetchRequests.WithLabelValues("non_json").Inc()
+			lastErr = validation.NewError(validation.ErrorUpstreamUnknown, "CDP returned non-JSON response", nil)
+			continue
+		}
+
+		CDPFetchRequests.WithLabelValues("ok").Inc()
+		UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), "200").Inc()
+		return body, nil
 	}
 
-	CDPFetchRequests.WithLabelValues("ok").Inc()
-	UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), "200").Inc()
-	return body, nil
+	return "", lastErr
 }
 
 func parseJSONBody(body string, result any) error {
