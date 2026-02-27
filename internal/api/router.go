@@ -71,6 +71,12 @@ func NewRouter() (*gin.Engine, error) {
 	v1 := router.Group("/v1")
 	{
 		v1.GET("/worlds", handleEndpoint(getWorlds))
+		v1.GET("/world/:name/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getWorldDetails(c, getValidator())
+		}))
+		v1.GET("/world/:name/dashboard", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getWorldDashboard(c, getValidator())
+		}))
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getWorld(c, getValidator())
 		}))
@@ -84,6 +90,9 @@ func NewRouter() (*gin.Engine, error) {
 		}))
 		v1.GET("/highscores/:world", redirectHighscoresWorld)
 		v1.GET("/highscores/:world/:category", redirectHighscoresCategory)
+		v1.GET("/highscores/:world/:category/:vocation/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllHighscores(c, getValidator())
+		}))
 		v1.GET("/highscores/:world/:category/:vocation/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getHighscores(c, getValidator())
 		}))
@@ -105,8 +114,14 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/events/schedule", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getEventsSchedule(c)
 		}))
+		v1.GET("/auctions/current/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllCurrentAuctions(c)
+		}))
 		v1.GET("/auctions/current/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getCurrentAuctions(c)
+		}))
+		v1.GET("/auctions/history/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllAuctionHistory(c)
 		}))
 		v1.GET("/auctions/history/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getAuctionHistory(c)
@@ -114,11 +129,20 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/auctions/:id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getAuctionDetail(c)
 		}))
+		v1.GET("/deaths/:world/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllDeaths(c, getValidator())
+		}))
 		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getDeaths(c, getValidator())
 		}))
+		v1.GET("/banishments/:world/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllBanishments(c, getValidator())
+		}))
 		v1.GET("/banishments/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getBanishments(c, getValidator())
+		}))
+		v1.GET("/transfers/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllTransfers(c, getValidator())
 		}))
 		v1.GET("/transfers", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getTransfers(c, getValidator())
@@ -128,6 +152,12 @@ func NewRouter() (*gin.Engine, error) {
 		}))
 		v1.GET("/guild/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getGuild(c)
+		}))
+		v1.GET("/guilds/:world/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllGuilds(c, getValidator())
+		}))
+		v1.GET("/guilds/:world/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getGuildsPage(c, getValidator())
 		}))
 		v1.GET("/guilds/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getGuilds(c, getValidator())
@@ -173,6 +203,44 @@ func getWorld(c *gin.Context, validator *validation.Validator) (endpointResult, 
 	}, nil
 }
 
+func getWorldDetails(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("name"))
+	canonicalWorld, worldID, ok := validator.WorldExists(worldInput)
+	if !ok {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	world, sources, err := scraper.FetchWorldDetails(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "world",
+		Payload:    world,
+		Sources:    sources,
+	}, nil
+}
+
+func getWorldDashboard(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("name"))
+	canonicalWorld, worldID, ok := validator.WorldExists(worldInput)
+	if !ok {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	dashboard, sources, err := scraper.FetchWorldDashboard(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "dashboard",
+		Payload:    dashboard,
+		Sources:    sources,
+	}, nil
+}
+
 func getCharacter(c *gin.Context) (endpointResult, error) {
 	characterInput := strings.TrimSpace(c.Param("name"))
 	canonicalName, validationErr := validation.IsCharacterNameValid(characterInput)
@@ -214,14 +282,54 @@ func getGuild(c *gin.Context) (endpointResult, error) {
 }
 
 func getGuilds(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	page := 1
+	pageInput := strings.TrimSpace(c.Query("page"))
+	if pageInput != "" {
+		parsedPage, pageErr := validation.ParsePage(pageInput)
+		if pageErr != nil {
+			return endpointResult{}, pageErr
+		}
+		page = parsedPage
+	}
+	return getGuildsForPage(c, validator, page)
+}
+
+func getGuildsPage(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	pageInput := strings.TrimSpace(c.Param("page"))
+	page, pageErr := validation.ParsePage(pageInput)
+	if pageErr != nil {
+		return endpointResult{}, pageErr
+	}
+	return getGuildsForPage(c, validator, page)
+}
+
+func getAllGuilds(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
 
-	baseURL := resolvedBaseURL
-	guilds, sourceURL, err := scraper.FetchGuilds(c.Request.Context(), baseURL, canonicalWorld, worldID, resolvedOpts)
+	guilds, sources, err := scraper.FetchAllGuilds(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "guilds",
+		Payload:    guilds,
+		Sources:    sources,
+	}, nil
+}
+
+func getGuildsForPage(c *gin.Context, validator *validation.Validator, page int) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	guilds, sourceURL, err := scraper.FetchGuilds(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, page, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
@@ -358,6 +466,46 @@ func getHighscores(c *gin.Context, validator *validation.Validator) (endpointRes
 		category,
 		vocation,
 		page,
+		resolvedOpts,
+	)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "highscores",
+		Payload:    highscores,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getAllHighscores(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	categoryInput := strings.TrimSpace(c.Param("category"))
+	vocationInput := strings.TrimSpace(c.Param("vocation"))
+
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	category, categoryOK := validator.ResolveHighscoreCategory(categoryInput)
+	if !categoryOK {
+		return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, "highscore category does not exist", nil)
+	}
+
+	vocation, vocationOK := validator.ResolveHighscoreVocation(vocationInput)
+	if !vocationOK {
+		return endpointResult{}, validation.NewError(validation.ErrorVocationDoesNotExist, "vocation does not exist", nil)
+	}
+
+	highscores, sourceURL, err := scraper.FetchAllHighscores(
+		c.Request.Context(),
+		resolvedBaseURL,
+		canonicalWorld,
+		worldID,
+		category,
+		vocation,
 		resolvedOpts,
 	)
 	if err != nil {
@@ -515,6 +663,19 @@ func getCurrentAuctions(c *gin.Context) (endpointResult, error) {
 	}, nil
 }
 
+func getAllCurrentAuctions(c *gin.Context) (endpointResult, error) {
+	auctions, sources, err := scraper.FetchAllCurrentAuctions(c.Request.Context(), resolvedBaseURL, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "auctions",
+		Payload:    auctions,
+		Sources:    sources,
+	}, nil
+}
+
 func getAuctionHistory(c *gin.Context) (endpointResult, error) {
 	pageInput := strings.TrimSpace(c.Param("page"))
 	page, pageErr := validation.ParsePage(pageInput)
@@ -532,6 +693,19 @@ func getAuctionHistory(c *gin.Context) (endpointResult, error) {
 		PayloadKey: "auctions",
 		Payload:    auctions,
 		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getAllAuctionHistory(c *gin.Context) (endpointResult, error) {
+	auctions, sources, err := scraper.FetchAllAuctionHistory(c.Request.Context(), resolvedBaseURL, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "auctions",
+		Payload:    auctions,
+		Sources:    sources,
 	}, nil
 }
 
@@ -607,6 +781,46 @@ func getTransfers(c *gin.Context, validator *validation.Validator) (endpointResu
 	}, nil
 }
 
+func getAllTransfers(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Query("world"))
+	levelInput := strings.TrimSpace(c.Query("level"))
+
+	worldID := 0
+	canonicalWorld := ""
+	if worldInput != "" {
+		var worldOK bool
+		canonicalWorld, worldID, worldOK = validator.WorldExists(worldInput)
+		if !worldOK {
+			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+		}
+	}
+
+	minLevel, levelErr := validation.ParseLevelFilter(levelInput)
+	if levelErr != nil {
+		return endpointResult{}, levelErr
+	}
+
+	transfers, sources, err := scraper.FetchAllTransfers(
+		c.Request.Context(),
+		resolvedBaseURL,
+		scraper.TransfersFilters{
+			WorldID:   worldID,
+			WorldName: canonicalWorld,
+			MinLevel:  minLevel,
+		},
+		resolvedOpts,
+	)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "transfers",
+		Payload:    transfers,
+		Sources:    sources,
+	}, nil
+}
+
 func getBanishments(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
@@ -641,6 +855,31 @@ func getBanishments(c *gin.Context, validator *validation.Validator) (endpointRe
 		PayloadKey: "banishments",
 		Payload:    banishments,
 		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getAllBanishments(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	banishments, sources, err := scraper.FetchAllBanishments(
+		c.Request.Context(),
+		resolvedBaseURL,
+		canonicalWorld,
+		worldID,
+		resolvedOpts,
+	)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "banishments",
+		Payload:    banishments,
+		Sources:    sources,
 	}, nil
 }
 
@@ -697,6 +936,50 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 		PayloadKey: "deaths",
 		Payload:    deaths,
 		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getAllDeaths(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	levelFilter, levelErr := validation.ParseLevelFilter(c.Query("level"))
+	if levelErr != nil {
+		return endpointResult{}, levelErr
+	}
+
+	pvpValue, pvpProvided, pvpErr := validation.ParsePvPOnlyFilter(c.Query("pvp"))
+	if pvpErr != nil {
+		return endpointResult{}, pvpErr
+	}
+
+	var pvpOnly *bool
+	if pvpProvided {
+		pvpOnly = &pvpValue
+	}
+
+	deaths, sources, err := scraper.FetchAllDeaths(
+		c.Request.Context(),
+		resolvedBaseURL,
+		canonicalWorld,
+		worldID,
+		scraper.DeathsFilters{
+			MinLevel: levelFilter,
+			PvPOnly:  pvpOnly,
+		},
+		resolvedOpts,
+	)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "deaths",
+		Payload:    deaths,
+		Sources:    sources,
 	}, nil
 }
 

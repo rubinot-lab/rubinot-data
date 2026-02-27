@@ -47,22 +47,32 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 		payloadKey string
 	}{
 		{name: "worlds", path: "/v1/worlds", httpCode: http.StatusOK, payloadKey: "worlds"},
+		{name: "world details", path: "/v1/world/Belaria/details", httpCode: http.StatusOK, payloadKey: "world"},
+		{name: "world dashboard", path: "/v1/world/Belaria/dashboard", httpCode: http.StatusOK, payloadKey: "dashboard"},
 		{name: "world", path: "/v1/world/Belaria", httpCode: http.StatusOK, payloadKey: "world"},
 		{name: "character", path: "/v1/character/Terah", httpCode: http.StatusOK, payloadKey: "character"},
 		{name: "guild", path: "/v1/guild/Panq%20Alliance", httpCode: http.StatusOK, payloadKey: "guild"},
 		{name: "guilds", path: "/v1/guilds/Belaria", httpCode: http.StatusOK, payloadKey: "guilds"},
+		{name: "guilds page", path: "/v1/guilds/Belaria/1", httpCode: http.StatusOK, payloadKey: "guilds"},
+		{name: "guilds all", path: "/v1/guilds/Belaria/all", httpCode: http.StatusOK, payloadKey: "guilds"},
 		{name: "highscores", path: "/v1/highscores/Belaria/experience/all/1", httpCode: http.StatusOK, payloadKey: "highscores"},
+		{name: "highscores all", path: "/v1/highscores/Belaria/experience/all/all", httpCode: http.StatusOK, payloadKey: "highscores"},
 		{name: "killstatistics", path: "/v1/killstatistics/Belaria", httpCode: http.StatusOK, payloadKey: "killstatistics"},
 		{name: "news by id", path: "/v1/news/id/140", httpCode: http.StatusOK, payloadKey: "news"},
 		{name: "news archive", path: "/v1/news/archive?days=90", httpCode: http.StatusOK, payloadKey: "newslist"},
 		{name: "news latest", path: "/v1/news/latest", httpCode: http.StatusOK, payloadKey: "newslist"},
 		{name: "news ticker", path: "/v1/news/newsticker", httpCode: http.StatusOK, payloadKey: "newslist"},
 		{name: "deaths", path: "/v1/deaths/Belaria?page=1", httpCode: http.StatusOK, payloadKey: "deaths"},
+		{name: "deaths all", path: "/v1/deaths/Belaria/all", httpCode: http.StatusOK, payloadKey: "deaths"},
 		{name: "transfers", path: "/v1/transfers?page=1", httpCode: http.StatusOK, payloadKey: "transfers"},
+		{name: "transfers all", path: "/v1/transfers/all", httpCode: http.StatusOK, payloadKey: "transfers"},
 		{name: "banishments", path: "/v1/banishments/Belaria?page=1", httpCode: http.StatusOK, payloadKey: "banishments"},
+		{name: "banishments all", path: "/v1/banishments/Belaria/all", httpCode: http.StatusOK, payloadKey: "banishments"},
 		{name: "events", path: "/v1/events/schedule", httpCode: http.StatusOK, payloadKey: "events"},
 		{name: "auctions current", path: "/v1/auctions/current/1", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auctions current all", path: "/v1/auctions/current/all", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auctions history", path: "/v1/auctions/history/1", httpCode: http.StatusOK, payloadKey: "auctions"},
+		{name: "auctions history all", path: "/v1/auctions/history/all", httpCode: http.StatusOK, payloadKey: "auctions"},
 		{name: "auction detail", path: "/v1/auctions/193226", httpCode: http.StatusOK, payloadKey: "auction"},
 		{name: "houses deprecated", path: "/v1/houses/Belaria/Venore", httpCode: http.StatusGone, errorCode: validation.ErrorEndpointDeprecated},
 		{name: "house deprecated", path: "/v1/house/Belaria/50", httpCode: http.StatusGone, errorCode: validation.ErrorEndpointDeprecated},
@@ -411,14 +421,47 @@ func newMockCDPForRouter(t *testing.T, apiUpstream *httptest.Server) *httptest.S
 
 			var value string
 			if req.Method == "Runtime.evaluate" {
-				matches := routerCDPPathRe.FindStringSubmatch(req.Params.Expression)
-				if len(matches) > 1 {
-					resp, err := http.Get(apiUpstream.URL + matches[1])
-					if err != nil {
-						value = fmt.Sprintf(`{"error":"%s"}`, err.Error())
+				matches := routerCDPPathRe.FindAllStringSubmatch(req.Params.Expression, -1)
+				if len(matches) > 0 {
+					isBatch := strings.Contains(req.Params.Expression, "Promise.allSettled")
+					if len(matches) == 1 && !isBatch {
+						resp, err := http.Get(apiUpstream.URL + matches[0][1])
+						if err != nil {
+							value = fmt.Sprintf(`{"error":"%s"}`, err.Error())
+						} else {
+							defer resp.Body.Close()
+							raw, _ := io.ReadAll(resp.Body)
+							value = string(raw)
+						}
 					} else {
-						defer resp.Body.Close()
-						raw, _ := io.ReadAll(resp.Body)
+						results := make([]map[string]string, 0, len(matches))
+						for _, match := range matches {
+							resp, err := http.Get(apiUpstream.URL + match[1])
+							if err != nil {
+								results = append(results, map[string]string{
+									"status": "rejected",
+									"value":  err.Error(),
+								})
+								continue
+							}
+
+							raw, readErr := io.ReadAll(resp.Body)
+							resp.Body.Close()
+							if readErr != nil {
+								results = append(results, map[string]string{
+									"status": "rejected",
+									"value":  readErr.Error(),
+								})
+								continue
+							}
+
+							results = append(results, map[string]string{
+								"status": "fulfilled",
+								"value":  string(raw),
+							})
+						}
+
+						raw, _ := json.Marshal(results)
 						value = string(raw)
 					}
 				}
