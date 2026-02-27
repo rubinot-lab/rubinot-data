@@ -156,14 +156,28 @@ func parseEventDayCell(cell *goquery.Selection) (domain.EventDay, bool) {
 	events := make([]string, 0)
 	dayValue := 0
 
-	divs := cell.Find("div")
-	if divs.Length() > 0 {
-		dayText := strings.TrimSpace(divs.First().Text())
+	firstDiv := cell.Children().Filter("div").First()
+	if firstDiv.Length() > 0 {
+		dayText := strings.TrimSpace(firstDiv.Text())
 		parsedDay, err := strconv.Atoi(dayText)
 		if err == nil {
 			dayValue = parsedDay
 		}
-		divs.Slice(1, goquery.ToEnd).Each(func(_ int, div *goquery.Selection) {
+	}
+
+	cell.Find("div.calendar-event span").Each(func(_ int, span *goquery.Selection) {
+		cleaned := strings.TrimSpace(strings.TrimPrefix(span.Text(), "*"))
+		if cleaned == "" {
+			return
+		}
+		events = append(events, cleaned)
+	})
+
+	if len(events) == 0 {
+		cell.Children().Filter("div").Each(func(i int, div *goquery.Selection) {
+			if i == 0 {
+				return
+			}
 			cleaned := strings.TrimSpace(strings.TrimPrefix(div.Text(), "*"))
 			if cleaned == "" {
 				return
@@ -182,13 +196,6 @@ func parseEventDayCell(cell *goquery.Selection) (domain.EventDay, bool) {
 			return domain.EventDay{}, false
 		}
 		dayValue = parsedDay
-		for _, line := range textLines[1:] {
-			cleaned := strings.TrimSpace(strings.TrimPrefix(line, "*"))
-			if cleaned == "" {
-				continue
-			}
-			events = append(events, cleaned)
-		}
 	}
 
 	if dayValue <= 0 || dayValue > 31 {
