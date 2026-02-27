@@ -2,6 +2,8 @@ package scraper
 
 import (
 	"context"
+	"encoding/base64"
+	"fmt"
 	"testing"
 )
 
@@ -87,5 +89,38 @@ func TestCDPClientBatchFetchEmptyPaths(t *testing.T) {
 	}
 	if len(results) != 0 {
 		t.Fatalf("expected empty result set, got %d", len(results))
+	}
+}
+
+func TestCDPClientFetchBinary(t *testing.T) {
+	expected := []byte{0x89, 0x50, 0x4E, 0x47}
+	b64 := base64.StdEncoding.EncodeToString(expected)
+
+	cdpSrv := newMockCDPServer(t, func(path string) string {
+		if path != "/api/outfit?looktype=131" {
+			return "{}"
+		}
+		return fmt.Sprintf(`{"status":200,"contentType":"image/png","bodyBase64":"%s"}`, b64)
+	})
+	defer cdpSrv.Close()
+
+	client := NewCDPClient(cdpSrv.URL)
+	if err := client.Connect(context.Background()); err != nil {
+		t.Fatalf("connect cdp: %v", err)
+	}
+	defer client.Close()
+
+	body, statusCode, contentType, err := client.FetchBinary(context.Background(), "/api/outfit?looktype=131")
+	if err != nil {
+		t.Fatalf("fetch binary: %v", err)
+	}
+	if statusCode != 200 {
+		t.Fatalf("expected status 200, got %d", statusCode)
+	}
+	if contentType != "image/png" {
+		t.Fatalf("expected image/png, got %q", contentType)
+	}
+	if string(body) != string(expected) {
+		t.Fatalf("unexpected binary body: %v", body)
 	}
 }

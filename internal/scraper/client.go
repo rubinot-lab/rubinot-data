@@ -288,6 +288,21 @@ func (c *Client) FetchJSON(ctx context.Context, apiURL string, result any) error
 	return parseJSONBody(body, result)
 }
 
+func (c *Client) FetchBinary(ctx context.Context, apiURL string) ([]byte, string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.Client.FetchBinary")
+	defer span.End()
+
+	cdp, err := c.ensureCDP(ctx)
+	if err != nil {
+		return nil, "", validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP init failed: %v", err), err)
+	}
+	if cdp == nil {
+		return nil, "", validation.NewError(validation.ErrorFlareSolverrConnection, "CDP_URL not configured; binary API requires CDP", nil)
+	}
+
+	return c.fetchViaCDPBinary(ctx, cdp, apiURL)
+}
+
 func (c *Client) FetchAllPages(
 	ctx context.Context,
 	firstPageURL string,
@@ -472,6 +487,61 @@ func (c *Client) fetchViaCDP(ctx context.Context, cdp *CDPClient, apiURL string)
 	return "", lastErr
 }
 
+func (c *Client) fetchViaCDPBinary(ctx context.Context, cdp *CDPClient, apiURL string) ([]byte, string, error) {
+	fetchPath, err := apiPathFromURL(apiURL)
+	if err != nil {
+		return nil, "", err
+	}
+
+	const maxRetries = 3
+	var lastErr error
+	for attempt := range maxRetries {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+
+		started := time.Now()
+		body, statusCode, contentType, err := cdp.FetchBinary(ctx, fetchPath)
+		CDPFetchDuration.Observe(time.Since(started).Seconds())
+		if err != nil {
+			CDPFetchRequests.WithLabelValues("error").Inc()
+			globalCDPMu.Lock()
+			globalCDPReady = false
+			globalCDPMu.Unlock()
+			lastErr = validation.NewError(validation.ErrorFlareSolverrConnection, fmt.Sprintf("CDP binary fetch failed: %v", err), err)
+			continue
+		}
+
+		UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), strconv.Itoa(statusCode)).Inc()
+		switch statusCode {
+		case http.StatusOK:
+			CDPFetchRequests.WithLabelValues("ok").Inc()
+			if strings.TrimSpace(contentType) == "" {
+				contentType = "application/octet-stream"
+			}
+			return body, contentType, nil
+		case http.StatusNotFound:
+			CDPFetchRequests.WithLabelValues("error").Inc()
+			return nil, "", validation.NewError(validation.ErrorEntityNotFound, "resource not found", nil)
+		case http.StatusServiceUnavailable:
+			CDPFetchRequests.WithLabelValues("error").Inc()
+			UpstreamMaintenance.Inc()
+			return nil, "", validation.NewError(validation.ErrorUpstreamMaintenanceMode, validation.UpstreamMaintenanceMessage, nil)
+		case http.StatusForbidden:
+			CDPFetchRequests.WithLabelValues("error").Inc()
+			lastErr = validation.NewError(validation.ErrorUpstreamForbidden, "API access denied", nil)
+		default:
+			CDPFetchRequests.WithLabelValues("error").Inc()
+			lastErr = validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("target returned non-200 via CDP: %d", statusCode), nil)
+		}
+	}
+
+	if lastErr == nil {
+		lastErr = validation.NewError(validation.ErrorUpstreamUnknown, "failed to fetch binary payload", nil)
+	}
+	return nil, "", lastErr
+}
+
 func apiPathFromURL(apiURL string) (string, error) {
 	parsed, err := url.Parse(apiURL)
 	if err != nil {
@@ -536,6 +606,14 @@ func endpointFromURL(sourceURL string) string {
 		return "banishments"
 	case strings.Contains(lower, "/api/events"):
 		return "events"
+	case strings.Contains(lower, "/api/boosted"):
+		return "boosted"
+	case strings.Contains(lower, "/api/maintenance"):
+		return "maintenance"
+	case strings.Contains(lower, "/api/geo-language"):
+		return "geo-language"
+	case strings.Contains(lower, "/api/outfit"):
+		return "outfit"
 	case strings.Contains(lower, "/api/news"):
 		return "news"
 	case strings.Contains(lower, "/api/bazaar"):

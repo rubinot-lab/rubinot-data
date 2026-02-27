@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -28,8 +29,8 @@ type cdpRequest struct {
 }
 
 type cdpResponse struct {
-	ID     int64            `json:"id"`
-	Result json.RawMessage  `json:"result,omitempty"`
+	ID     int64             `json:"id"`
+	Result json.RawMessage   `json:"result,omitempty"`
 	Error  *cdpResponseError `json:"error,omitempty"`
 }
 
@@ -49,6 +50,12 @@ type cdpEvalResult struct {
 type BatchResult struct {
 	Status string `json:"status"`
 	Value  string `json:"value"`
+}
+
+type cdpBinaryResult struct {
+	Status      int    `json:"status"`
+	ContentType string `json:"contentType"`
+	BodyBase64  string `json:"bodyBase64"`
 }
 
 type CDPClient struct {
@@ -201,6 +208,54 @@ func (c *CDPClient) Fetch(ctx context.Context, apiPath string) (string, error) {
 	`, strings.ReplaceAll(apiPath, "'", "\\'"))
 
 	return c.Evaluate(ctx, expression)
+}
+
+func (c *CDPClient) FetchBinary(ctx context.Context, apiPath string) ([]byte, int, string, error) {
+	escaped := strings.ReplaceAll(apiPath, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "'", "\\'")
+
+	expression := fmt.Sprintf(`
+		(async () => {
+			const resp = await fetch('%s');
+			const buffer = await resp.arrayBuffer();
+			const bytes = new Uint8Array(buffer);
+			const chunkSize = 0x8000;
+			let binary = '';
+			for (let i = 0; i < bytes.length; i += chunkSize) {
+				binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+			}
+			return JSON.stringify({
+				status: resp.status,
+				contentType: resp.headers.get('content-type') || 'application/octet-stream',
+				bodyBase64: btoa(binary),
+			});
+		})()
+	`, escaped)
+
+	raw, err := c.Evaluate(ctx, expression)
+	if err != nil {
+		return nil, 0, "", err
+	}
+
+	var out cdpBinaryResult
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, 0, "", fmt.Errorf("decode CDP binary response: %w", err)
+	}
+
+	if out.ContentType == "" {
+		out.ContentType = "application/octet-stream"
+	}
+
+	body := []byte{}
+	if out.BodyBase64 != "" {
+		decoded, err := base64.StdEncoding.DecodeString(out.BodyBase64)
+		if err != nil {
+			return nil, 0, "", fmt.Errorf("decode CDP binary payload: %w", err)
+		}
+		body = decoded
+	}
+
+	return body, out.Status, out.ContentType, nil
 }
 
 func (c *CDPClient) BatchFetch(ctx context.Context, apiPaths []string) ([]BatchResult, error) {
