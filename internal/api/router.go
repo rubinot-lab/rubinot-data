@@ -612,34 +612,43 @@ func getAllHighscores(c *gin.Context, validator *validation.Validator) (endpoint
 		return endpointResult{}, validation.NewError(validation.ErrorVocationDoesNotExist, "vocation does not exist", nil)
 	}
 
+	if isAllWorldsToken(worldInput) {
+		grouped, sources, err := scraper.FetchAllHighscoresPerWorld(
+			c.Request.Context(),
+			resolvedBaseURL,
+			validator.AllWorlds(),
+			category,
+			vocation,
+			resolvedOpts,
+		)
+		if err != nil {
+			return endpointResult{Sources: sources}, err
+		}
+		return endpointResult{
+			PayloadKey: "highscores",
+			Payload:    grouped,
+			Sources:    sources,
+		}, nil
+	}
+
 	var (
 		highscores domain.HighscoresResult
 		sourceURL  string
 		err        error
 	)
-	if isAllWorldsToken(worldInput) {
-		highscores, sourceURL, err = scraper.FetchAllHighscoresAllWorlds(
-			c.Request.Context(),
-			resolvedBaseURL,
-			category,
-			vocation,
-			resolvedOpts,
-		)
-	} else {
-		canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-		if !worldOK {
-			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-		}
-		highscores, sourceURL, err = scraper.FetchAllHighscores(
-			c.Request.Context(),
-			resolvedBaseURL,
-			canonicalWorld,
-			worldID,
-			category,
-			vocation,
-			resolvedOpts,
-		)
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
+	highscores, sourceURL, err = scraper.FetchAllHighscores(
+		c.Request.Context(),
+		resolvedBaseURL,
+		canonicalWorld,
+		worldID,
+		category,
+		vocation,
+		resolvedOpts,
+	)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}

@@ -247,6 +247,72 @@ func FetchAllHighscoresAllWorlds(
 	return result, sourceURL, nil
 }
 
+func FetchAllHighscoresPerWorld(
+	ctx context.Context,
+	baseURL string,
+	worlds []validation.World,
+	category validation.HighscoreCategory,
+	vocation validation.HighscoreVocation,
+	opts FetchOptions,
+) (domain.HighscoresByWorldResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchAllHighscoresPerWorld")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "highscores"),
+		attribute.String("rubinot.world", "all"),
+		attribute.String("rubinot.category", category.Slug),
+		attribute.Int("rubinot.profession_id", vocation.ProfessionID),
+		attribute.Int("rubinot.world_count", len(worlds)),
+	)
+
+	if len(worlds) == 0 {
+		return domain.HighscoresByWorldResult{
+			World:        "all",
+			Category:     category.Slug,
+			Vocation:     vocation.Name,
+			TotalWorlds:  0,
+			TotalRecords: 0,
+			TotalEntries: 0,
+			Worlds:       []domain.HighscoresResult{},
+		}, []string{}, nil
+	}
+
+	results := make([]domain.HighscoresResult, 0, len(worlds))
+	sources := make([]string, 0, len(worlds))
+	totalRecords := 0
+	totalEntries := 0
+
+	for _, world := range worlds {
+		highscores, sourceURL, err := FetchAllHighscores(
+			ctx,
+			baseURL,
+			world.Name,
+			world.ID,
+			category,
+			vocation,
+			opts,
+		)
+		sources = append(sources, sourceURL)
+		if err != nil {
+			return domain.HighscoresByWorldResult{}, sources, err
+		}
+		results = append(results, highscores)
+		totalRecords += highscores.HighscorePage.TotalRecords
+		totalEntries += len(highscores.HighscoreList)
+	}
+
+	return domain.HighscoresByWorldResult{
+		World:        "all",
+		Category:     category.Slug,
+		Vocation:     vocation.Name,
+		TotalWorlds:  len(results),
+		TotalRecords: totalRecords,
+		TotalEntries: totalEntries,
+		Worlds:       results,
+	}, sources, nil
+}
+
 func fetchHighscoresPayload(
 	ctx context.Context,
 	client *Client,

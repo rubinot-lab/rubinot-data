@@ -31,3 +31,13 @@ type HighscoresResult struct {
 	HighscorePage    HighscorePage `json:"highscore_page"`
 	AvailableSeasons []int         `json:"available_seasons,omitempty"`
 }
+
+type HighscoresByWorldResult struct {
+	World        string             `json:"world"`
+	Category     string             `json:"category"`
+	Vocation     string             `json:"vocation"`
+	TotalWorlds  int                `json:"total_worlds"`
+	TotalRecords int                `json:"total_records"`
+	TotalEntries int                `json:"total_entries"`
+	Worlds       []HighscoresResult `json:"worlds"`
+}

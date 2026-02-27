@@ -138,6 +138,44 @@ func TestRouterHighscoresRedirects(t *testing.T) {
 	}
 }
 
+func TestRouterHighscoresAllWorldsAllReturnsGroupedPayload(t *testing.T) {
+	api := newHappyAPIUpstream(t)
+	defer api.Close()
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
+	rec := performRequest(router, http.MethodGet, "/v1/highscores/all/experience/all/all")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	body := decodeJSONBody(t, rec)
+	assertEnvelope(t, body, http.StatusOK, 0)
+
+	highscores, ok := body["highscores"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected highscores object, got %#v", body["highscores"])
+	}
+	if highscores["world"] != "all" {
+		t.Fatalf("expected grouped highscores.world=all, got %#v", highscores["world"])
+	}
+
+	worlds, ok := highscores["worlds"].([]any)
+	if !ok || len(worlds) == 0 {
+		t.Fatalf("expected highscores.worlds array, got %#v", highscores["worlds"])
+	}
+	first, ok := worlds[0].(map[string]any)
+	if !ok {
+		t.Fatalf("expected first grouped world payload object, got %#v", worlds[0])
+	}
+	if _, ok := first["highscore_list"]; !ok {
+		t.Fatalf("expected grouped world payload with highscore_list, got %#v", first)
+	}
+}
+
 func TestRouterValidationErrors(t *testing.T) {
 	api := newHappyAPIUpstream(t)
 	defer api.Close()
