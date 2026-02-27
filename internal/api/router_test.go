@@ -1,9 +1,13 @@
 package api
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -126,12 +130,18 @@ func TestRouterOutfitBinary(t *testing.T) {
 	for _, path := range []string{
 		"/v1/outfit?looktype=131",
 		"/v1/outfit/Terah",
+		"/v1/outfit/Terah?direction=0&animated=0&walk=0&size=1&format=gif",
 	} {
 		rec := performRequest(router, http.MethodGet, path)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("path %q: expected status %d, got %d: %s", path, http.StatusOK, rec.Code, rec.Body.String())
 		}
-		if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "image/png") {
+		ct := rec.Header().Get("Content-Type")
+		if strings.Contains(path, "format=gif") {
+			if !strings.Contains(ct, "image/gif") {
+				t.Fatalf("path %q: expected content-type image/gif, got %q", path, ct)
+			}
+		} else if !strings.Contains(ct, "image/png") {
 			t.Fatalf("path %q: expected content-type image/png, got %q", path, ct)
 		}
 		if rec.Body.Len() == 0 {
@@ -462,7 +472,7 @@ func newHappyAPIUpstream(t *testing.T) *httptest.Server {
 			writeJSON(w, map[string]any{"auction": map[string]any{"id": 193226, "state": 1, "stateName": "active", "playerId": 1, "owner": 2, "startingValue": 100, "currentValue": 200, "winningBid": 0, "highestBidderId": 0, "auctionStart": 1772000000, "auctionEnd": 1772100000}, "player": map[string]any{"name": "Char", "level": 1000, "vocation": 6, "vocationName": "Elder Druid", "sex": 0, "worldId": 15, "worldName": "Belaria", "lookType": 1, "lookHead": 2, "lookBody": 3, "lookLegs": 4, "lookFeet": 5, "lookAddons": 0, "lookMount": 0}, "general": map[string]any{"achievementPoints": 20, "charmPoints": 10, "magLevel": 30, "skills": map[string]any{"axe": 1, "club": 2, "distance": 3, "shielding": 4, "sword": 5}}, "highlightItems": []any{}, "highlightAugments": []any{}})
 		case r.URL.Path == "/api/outfit":
 			w.Header().Set("Content-Type", "image/png")
-			_, _ = w.Write([]byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A})
+			_, _ = w.Write(testPNGBytes(t))
 		default:
 			t.Fatalf("unexpected upstream request: %s", r.URL.String())
 		}
@@ -665,4 +675,21 @@ func toInt(t *testing.T, value any) int {
 		t.Fatalf("unsupported numeric type %T (%v)", value, value)
 		return 0
 	}
+}
+
+func testPNGBytes(t *testing.T) []byte {
+	t.Helper()
+
+	img := image.NewNRGBA(image.Rect(0, 0, 2, 2))
+	opaque := color.NRGBA{R: 33, G: 122, B: 244, A: 255}
+	img.Set(0, 0, opaque)
+	img.Set(1, 0, opaque)
+	img.Set(0, 1, opaque)
+	img.Set(1, 1, opaque)
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode test png fixture: %v", err)
+	}
+	return buf.Bytes()
 }

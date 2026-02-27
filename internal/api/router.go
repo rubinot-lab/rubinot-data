@@ -839,13 +839,13 @@ func getOutfitByCharacterName(c *gin.Context) {
 		return
 	}
 
-	query := url.Values{}
-	query.Set("type", strconv.Itoa(character.CharacterInfo.Outfit.LookType))
-	query.Set("head", strconv.Itoa(character.CharacterInfo.Outfit.LookHead))
-	query.Set("body", strconv.Itoa(character.CharacterInfo.Outfit.LookBody))
-	query.Set("legs", strconv.Itoa(character.CharacterInfo.Outfit.LookLegs))
-	query.Set("feet", strconv.Itoa(character.CharacterInfo.Outfit.LookFeet))
-	query.Set("addons", strconv.Itoa(character.CharacterInfo.Outfit.LookAddons))
+	query := c.Request.URL.Query()
+	setOutfitDefaultParam(query, "type", "looktype", strconv.Itoa(character.CharacterInfo.Outfit.LookType))
+	setOutfitDefaultParam(query, "head", "lookhead", strconv.Itoa(character.CharacterInfo.Outfit.LookHead))
+	setOutfitDefaultParam(query, "body", "lookbody", strconv.Itoa(character.CharacterInfo.Outfit.LookBody))
+	setOutfitDefaultParam(query, "legs", "looklegs", strconv.Itoa(character.CharacterInfo.Outfit.LookLegs))
+	setOutfitDefaultParam(query, "feet", "lookfeet", strconv.Itoa(character.CharacterInfo.Outfit.LookFeet))
+	setOutfitDefaultParam(query, "addons", "lookaddons", strconv.Itoa(character.CharacterInfo.Outfit.LookAddons))
 
 	body, contentType, outfitSourceURL, err := scraper.FetchOutfitImage(c.Request.Context(), resolvedBaseURL, query.Encode(), resolvedOpts)
 	if err != nil {
@@ -856,13 +856,21 @@ func getOutfitByCharacterName(c *gin.Context) {
 	writeOutfitResponse(c, body, contentType, outfitSourceURL)
 }
 
+func setOutfitDefaultParam(values url.Values, primary, legacy, fallback string) {
+	if strings.TrimSpace(values.Get(primary)) == "" && strings.TrimSpace(values.Get(legacy)) == "" {
+		values.Set(primary, fallback)
+	}
+}
+
 func writeOutfitResponse(c *gin.Context, body []byte, contentType, sourceURL string) {
-	if strings.TrimSpace(contentType) == "" {
-		contentType = "image/png"
+	formattedBody, formattedContentType, err := maybeFormatOutfitImage(c.Query("format"), body, contentType)
+	if err != nil {
+		writeOutfitError(c, validation.NewError(validation.ErrorUpstreamUnknown, fmt.Sprintf("failed to render outfit image: %v", err), err), []string{sourceURL})
+		return
 	}
 	c.Header("Cache-Control", "public, max-age=300")
 	c.Header("X-Source-URL", sourceURL)
-	c.Data(http.StatusOK, contentType, body)
+	c.Data(http.StatusOK, formattedContentType, formattedBody)
 }
 
 func writeOutfitError(c *gin.Context, err error, sources []string) {

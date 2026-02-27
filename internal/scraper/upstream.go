@@ -253,6 +253,7 @@ func normalizeOutfitQuery(rawQuery string) string {
 	values.Del("looklegs")
 	values.Del("lookfeet")
 	values.Del("lookaddons")
+	values.Del("format")
 
 	return values.Encode()
 }
