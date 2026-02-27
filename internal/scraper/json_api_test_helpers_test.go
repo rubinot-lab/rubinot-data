@@ -130,9 +130,28 @@ func newMockCDPServer(t *testing.T, contentForPath func(string) string) *httptes
 
 			var value string
 			if req.Method == "Runtime.evaluate" {
-				matches := cdpFetchPathRe.FindStringSubmatch(req.Params.Expression)
-				if len(matches) > 1 && contentForPath != nil {
-					value = contentForPath(matches[1])
+				matches := cdpFetchPathRe.FindAllStringSubmatch(req.Params.Expression, -1)
+				if len(matches) > 0 && contentForPath != nil {
+					if len(matches) == 1 {
+						value = contentForPath(matches[0][1])
+					} else {
+						results := make([]map[string]string, 0, len(matches))
+						for _, match := range matches {
+							body := contentForPath(match[1])
+							if strings.HasPrefix(body, "__REJECT__:") {
+								results = append(results, map[string]string{
+									"status": "rejected",
+									"value":  strings.TrimPrefix(body, "__REJECT__:"),
+								})
+								continue
+							}
+							results = append(results, map[string]string{
+								"status": "fulfilled",
+								"value":  body,
+							})
+						}
+						value = mustJSON(t, results)
+					}
 				}
 			}
 

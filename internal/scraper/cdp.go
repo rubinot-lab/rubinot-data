@@ -46,6 +46,11 @@ type cdpEvalResult struct {
 	ExceptionDetails json.RawMessage `json:"exceptionDetails,omitempty"`
 }
 
+type BatchResult struct {
+	Status string `json:"status"`
+	Value  string `json:"value"`
+}
+
 type CDPClient struct {
 	mu      sync.Mutex
 	conn    *websocket.Conn
@@ -196,6 +201,48 @@ func (c *CDPClient) Fetch(ctx context.Context, apiPath string) (string, error) {
 	`, strings.ReplaceAll(apiPath, "'", "\\'"))
 
 	return c.Evaluate(ctx, expression)
+}
+
+func (c *CDPClient) BatchFetch(ctx context.Context, apiPaths []string) ([]BatchResult, error) {
+	if len(apiPaths) == 0 {
+		return []BatchResult{}, nil
+	}
+
+	fetchCalls := make([]string, 0, len(apiPaths))
+	for _, path := range apiPaths {
+		escaped := strings.ReplaceAll(path, "\\", "\\\\")
+		escaped = strings.ReplaceAll(escaped, "'", "\\'")
+		fetchCalls = append(fetchCalls, fmt.Sprintf("fetch('%s').then((resp) => resp.text())", escaped))
+	}
+
+	expression := fmt.Sprintf(`
+		(async () => {
+			const results = await Promise.allSettled(
+				[%s]
+			);
+			return JSON.stringify(results.map((result) => ({
+				status: result.status,
+				value: result.status === 'fulfilled'
+					? result.value
+					: String(result.reason && result.reason.message ? result.reason.message : (result.reason || 'fetch failed')),
+			})));
+		})()
+	`, strings.Join(fetchCalls, ","))
+
+	raw, err := c.Evaluate(ctx, expression)
+	if err != nil {
+		return nil, err
+	}
+
+	var out []BatchResult
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, fmt.Errorf("decode CDP batch response: %w", err)
+	}
+	if len(out) != len(apiPaths) {
+		return nil, fmt.Errorf("invalid CDP batch response size: got %d, expected %d", len(out), len(apiPaths))
+	}
+
+	return out, nil
 }
 
 func (c *CDPClient) Close() error {
