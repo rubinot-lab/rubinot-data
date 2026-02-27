@@ -159,6 +159,74 @@ func FetchAllGuilds(
 	return result, sources, nil
 }
 
+func FetchAllGuildsDetails(
+	ctx context.Context,
+	baseURL,
+	worldName string,
+	worldID int,
+	opts FetchOptions,
+) (domain.GuildsDetailsResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchAllGuildsDetails")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "guilds"),
+		attribute.String("rubinot.world", worldName),
+		attribute.Int("rubinot.world_id", worldID),
+	)
+
+	guildsList, listSources, err := FetchAllGuilds(ctx, baseURL, worldName, worldID, opts)
+	if err != nil {
+		return domain.GuildsDetailsResult{}, listSources, err
+	}
+
+	detailURLs := make([]string, 0, len(guildsList.Guilds))
+	for _, guild := range guildsList.Guilds {
+		guildName := strings.TrimSpace(guild.Name)
+		if guildName == "" {
+			continue
+		}
+		detailURLs = append(detailURLs, fmt.Sprintf("%s/api/guilds/%s", strings.TrimRight(baseURL, "/"), url.PathEscape(guildName)))
+	}
+
+	if len(detailURLs) == 0 {
+		return domain.GuildsDetailsResult{
+			World:  worldName,
+			Guilds: []domain.GuildResult{},
+		}, listSources, nil
+	}
+
+	client := NewClient(opts)
+	started := time.Now()
+	bodies, err := fetchBatchJSONBodies(ctx, client, detailURLs)
+	scrapeDuration.WithLabelValues("guilds").Observe(time.Since(started).Seconds())
+	allSources := append(append([]string{}, listSources...), detailURLs...)
+	if err != nil {
+		scrapeRequests.WithLabelValues("guilds", "error").Inc()
+		return domain.GuildsDetailsResult{}, allSources, err
+	}
+	scrapeRequests.WithLabelValues("guilds", "ok").Inc()
+
+	parseStarted := time.Now()
+	guilds := make([]domain.GuildResult, 0, len(bodies))
+	for _, body := range bodies {
+		var payload guildAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			ParseErrors.WithLabelValues("guilds", "decode_error").Inc()
+			return domain.GuildsDetailsResult{}, allSources, parseErr
+		}
+		guilds = append(guilds, mapGuildResponse(payload))
+	}
+
+	result := domain.GuildsDetailsResult{
+		World:  worldName,
+		Guilds: guilds,
+	}
+	parseDuration.WithLabelValues("guilds").Observe(time.Since(parseStarted).Seconds())
+	ParseItems.WithLabelValues("guilds").Set(float64(len(guilds)))
+	return result, allSources, nil
+}
+
 func mapGuildListEntries(payload guildsAPIResponse) []domain.GuildListEntry {
 	items := make([]domain.GuildListEntry, 0, len(payload.Guilds))
 	for _, guild := range payload.Guilds {

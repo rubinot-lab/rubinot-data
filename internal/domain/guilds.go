@@ -22,3 +22,8 @@ type GuildsPagination struct {
 	TotalPages  int `json:"total_pages"`
 	TotalCount  int `json:"total_count"`
 }
+
+type GuildsDetailsResult struct {
+	World  string        `json:"world"`
+	Guilds []GuildResult `json:"guilds"`
+}

@@ -55,6 +55,7 @@ func TestRouterIntegrationHappyPaths(t *testing.T) {
 		{name: "guilds", path: "/v1/guilds/Belaria", httpCode: http.StatusOK, payloadKey: "guilds"},
 		{name: "guilds page", path: "/v1/guilds/Belaria/1", httpCode: http.StatusOK, payloadKey: "guilds"},
 		{name: "guilds all", path: "/v1/guilds/Belaria/all", httpCode: http.StatusOK, payloadKey: "guilds"},
+		{name: "guilds all details", path: "/v1/guilds/Belaria/all/details", httpCode: http.StatusOK, payloadKey: "guilds"},
 		{name: "highscores", path: "/v1/highscores/Belaria/experience/all/1", httpCode: http.StatusOK, payloadKey: "highscores"},
 		{name: "highscores all", path: "/v1/highscores/Belaria/experience/all/all", httpCode: http.StatusOK, payloadKey: "highscores"},
 		{name: "killstatistics", path: "/v1/killstatistics/Belaria", httpCode: http.StatusOK, payloadKey: "killstatistics"},

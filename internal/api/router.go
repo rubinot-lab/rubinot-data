@@ -153,6 +153,9 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/guild/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getGuild(c)
 		}))
+		v1.GET("/guilds/:world/all/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return getAllGuildsDetails(c, getValidator())
+		}))
 		v1.GET("/guilds/:world/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getAllGuilds(c, getValidator())
 		}))
@@ -311,6 +314,25 @@ func getAllGuilds(c *gin.Context, validator *validation.Validator) (endpointResu
 	}
 
 	guilds, sources, err := scraper.FetchAllGuilds(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+
+	return endpointResult{
+		PayloadKey: "guilds",
+		Payload:    guilds,
+		Sources:    sources,
+	}, nil
+}
+
+func getAllGuildsDetails(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
+	guilds, sources, err := scraper.FetchAllGuildsDetails(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
 	if err != nil {
 		return endpointResult{Sources: sources}, err
 	}
