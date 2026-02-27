@@ -132,7 +132,8 @@ func newMockCDPServer(t *testing.T, contentForPath func(string) string) *httptes
 			if req.Method == "Runtime.evaluate" {
 				matches := cdpFetchPathRe.FindAllStringSubmatch(req.Params.Expression, -1)
 				if len(matches) > 0 && contentForPath != nil {
-					if len(matches) == 1 {
+					isBatch := strings.Contains(req.Params.Expression, "Promise.allSettled")
+					if len(matches) == 1 && !isBatch {
 						value = contentForPath(matches[0][1])
 					} else {
 						results := make([]map[string]string, 0, len(matches))
