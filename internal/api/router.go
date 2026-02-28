@@ -396,6 +396,26 @@ func getGuildsPage(c *gin.Context, validator *validation.Validator) (endpointRes
 
 func getAllGuilds(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
+
+	if isAllWorldsToken(worldInput) {
+		worlds := validator.AllWorlds()
+		results := make([]domain.GuildsResult, 0, len(worlds))
+		allSources := make([]string, 0)
+		for _, world := range worlds {
+			guilds, sources, err := scraper.FetchAllGuilds(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
+			if err != nil {
+				return endpointResult{Sources: append(allSources, sources...)}, err
+			}
+			results = append(results, guilds)
+			allSources = append(allSources, sources...)
+		}
+		return endpointResult{
+			PayloadKey: "guilds",
+			Payload:    results,
+			Sources:    allSources,
+		}, nil
+	}
+
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
@@ -415,6 +435,26 @@ func getAllGuilds(c *gin.Context, validator *validation.Validator) (endpointResu
 
 func getAllGuildsDetails(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
+
+	if isAllWorldsToken(worldInput) {
+		worlds := validator.AllWorlds()
+		results := make([]domain.GuildsDetailsResult, 0, len(worlds))
+		allSources := make([]string, 0)
+		for _, world := range worlds {
+			guilds, sources, err := scraper.FetchAllGuildsDetails(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
+			if err != nil {
+				return endpointResult{Sources: append(allSources, sources...)}, err
+			}
+			results = append(results, guilds)
+			allSources = append(allSources, sources...)
+		}
+		return endpointResult{
+			PayloadKey: "guilds",
+			Payload:    results,
+			Sources:    allSources,
+		}, nil
+	}
+
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
@@ -676,6 +716,20 @@ func getAllHighscores(c *gin.Context, validator *validation.Validator) (endpoint
 
 func getKillstatistics(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
+
+	if isAllWorldsToken(worldInput) {
+		worlds := validator.AllWorlds()
+		results, sources, err := scraper.FetchAllWorldsKillstatistics(c.Request.Context(), resolvedBaseURL, worlds, resolvedOpts)
+		if err != nil {
+			return endpointResult{Sources: sources}, err
+		}
+		return endpointResult{
+			PayloadKey: "killstatistics",
+			Payload:    results,
+			Sources:    sources,
+		}, nil
+	}
+
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
@@ -773,6 +827,9 @@ func getBoosted(c *gin.Context) (endpointResult, error) {
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
+
+	boosted.Boss.ImageURL = fmt.Sprintf("/v1/outfit?type=%d", boosted.Boss.LookType)
+	boosted.Monster.ImageURL = fmt.Sprintf("/v1/outfit?type=%d", boosted.Monster.LookType)
 
 	return endpointResult{
 		PayloadKey: "boosted",
@@ -1213,6 +1270,26 @@ func getBanishments(c *gin.Context, validator *validation.Validator) (endpointRe
 
 func getAllBanishments(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
+
+	if isAllWorldsToken(worldInput) {
+		worlds := validator.AllWorlds()
+		results := make([]domain.BanishmentsResult, 0, len(worlds))
+		allSources := make([]string, 0)
+		for _, world := range worlds {
+			banishments, sources, err := scraper.FetchAllBanishments(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
+			if err != nil {
+				return endpointResult{Sources: append(allSources, sources...)}, err
+			}
+			results = append(results, banishments)
+			allSources = append(allSources, sources...)
+		}
+		return endpointResult{
+			PayloadKey: "banishments",
+			Payload:    results,
+			Sources:    allSources,
+		}, nil
+	}
+
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
@@ -1294,10 +1371,6 @@ func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult,
 
 func getAllDeaths(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
 
 	levelFilter, levelErr := validation.ParseLevelFilter(c.Query("level"))
 	if levelErr != nil {
@@ -1314,15 +1387,41 @@ func getAllDeaths(c *gin.Context, validator *validation.Validator) (endpointResu
 		pvpOnly = &pvpValue
 	}
 
+	filters := scraper.DeathsFilters{
+		MinLevel: levelFilter,
+		PvPOnly:  pvpOnly,
+	}
+
+	if isAllWorldsToken(worldInput) {
+		worlds := validator.AllWorlds()
+		results := make([]domain.DeathsResult, 0, len(worlds))
+		allSources := make([]string, 0)
+		for _, world := range worlds {
+			deaths, sources, err := scraper.FetchAllDeaths(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, filters, resolvedOpts)
+			if err != nil {
+				return endpointResult{Sources: append(allSources, sources...)}, err
+			}
+			results = append(results, deaths)
+			allSources = append(allSources, sources...)
+		}
+		return endpointResult{
+			PayloadKey: "deaths",
+			Payload:    results,
+			Sources:    allSources,
+		}, nil
+	}
+
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+
 	deaths, sources, err := scraper.FetchAllDeaths(
 		c.Request.Context(),
 		resolvedBaseURL,
 		canonicalWorld,
 		worldID,
-		scraper.DeathsFilters{
-			MinLevel: levelFilter,
-			PvPOnly:  pvpOnly,
-		},
+		filters,
 		resolvedOpts,
 	)
 	if err != nil {
