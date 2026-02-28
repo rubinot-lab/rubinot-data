@@ -4,6 +4,7 @@ type BoostedEntity struct {
 	ID       int    `json:"id"`
 	Name     string `json:"name"`
 	LookType int    `json:"looktype"`
+	ImageURL string `json:"image_url"`
 }
 
 type BoostedResult struct {
