@@ -2,6 +2,7 @@ package scraper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/giovannirco/rubinot-data/internal/domain"
+	"github.com/giovannirco/rubinot-data/internal/validation"
 	"go.opentelemetry.io/otel/attribute"
 )
 
@@ -65,6 +67,50 @@ func FetchKillstatistics(
 	ParseItems.WithLabelValues("killstatistics").Set(float64(len(result.Entries)))
 
 	return result, sourceURL, nil
+}
+
+func FetchAllWorldsKillstatistics(
+	ctx context.Context,
+	baseURL string,
+	worlds []validation.World,
+	opts FetchOptions,
+) ([]domain.KillstatisticsResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchAllWorldsKillstatistics")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "killstatistics_all"),
+		attribute.Int("rubinot.world_count", len(worlds)),
+	)
+
+	apiURLs := make([]string, 0, len(worlds))
+	for _, world := range worlds {
+		query := url.Values{}
+		query.Set("world", strconv.Itoa(world.ID))
+		apiURLs = append(apiURLs, fmt.Sprintf("%s/api/killstats?%s", strings.TrimRight(baseURL, "/"), query.Encode()))
+	}
+
+	client := NewClient(opts)
+	started := time.Now()
+	bodies, err := fetchBatchJSONBodies(ctx, client, apiURLs)
+	scrapeDuration.WithLabelValues("killstatistics_all").Observe(time.Since(started).Seconds())
+	if err != nil {
+		scrapeRequests.WithLabelValues("killstatistics_all", "error").Inc()
+		return nil, apiURLs, err
+	}
+	scrapeRequests.WithLabelValues("killstatistics_all", "ok").Inc()
+
+	results := make([]domain.KillstatisticsResult, 0, len(worlds))
+	for i, body := range bodies {
+		var payload killstatisticsAPIResponse
+		if err := json.Unmarshal([]byte(body), &payload); err != nil {
+			return nil, apiURLs, fmt.Errorf("parse killstatistics for %s: %w", worlds[i].Name, err)
+		}
+		results = append(results, mapKillstatisticsResponse(worlds[i].Name, payload))
+	}
+	ParseItems.WithLabelValues("killstatistics_all").Set(float64(len(results)))
+
+	return results, apiURLs, nil
 }
 
 func mapKillstatisticsResponse(worldName string, payload killstatisticsAPIResponse) domain.KillstatisticsResult {
