@@ -3,8 +3,11 @@ package scraper
 import (
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+var worldMu sync.RWMutex
 
 var worldIDToName = map[int]string{
 	1:  "Elysian",
@@ -40,6 +43,28 @@ var worldNameToID = map[string]int{
 	"serenianiv":  25,
 }
 
+type WorldMapping struct {
+	ID   int
+	Name string
+}
+
+func UpdateWorldMappings(worlds []WorldMapping) {
+	idToName := make(map[int]string, len(worlds))
+	nameToID := make(map[string]int, len(worlds))
+	for _, w := range worlds {
+		if w.ID <= 0 || strings.TrimSpace(w.Name) == "" {
+			continue
+		}
+		name := strings.TrimSpace(w.Name)
+		idToName[w.ID] = name
+		nameToID[strings.ToLower(name)] = w.ID
+	}
+	worldMu.Lock()
+	worldIDToName = idToName
+	worldNameToID = nameToID
+	worldMu.Unlock()
+}
+
 var vocationIDToName = map[int]string{
 	0: "None",
 	1: "Sorcerer",
@@ -55,14 +80,19 @@ var vocationIDToName = map[int]string{
 }
 
 func worldNameByID(id int) string {
-	if value, ok := worldIDToName[id]; ok {
+	worldMu.RLock()
+	value, ok := worldIDToName[id]
+	worldMu.RUnlock()
+	if ok {
 		return value
 	}
 	return ""
 }
 
 func worldIDByName(name string) (int, bool) {
+	worldMu.RLock()
 	id, ok := worldNameToID[normalizeLookup(name)]
+	worldMu.RUnlock()
 	return id, ok
 }
 

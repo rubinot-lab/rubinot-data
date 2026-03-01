@@ -50,6 +50,47 @@ func TestFetchTransfersFromAPI(t *testing.T) {
 	}
 }
 
+func TestFetchTransfersFromAPIWithStringWorlds(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assertPath(t, r, "/api/transfers")
+		writeJSON(w, map[string]any{
+			"transfers": []map[string]any{{
+				"player_name":    "Warrior",
+				"player_level":   800,
+				"from_world":     "Mystian",
+				"to_world":       "Solarian",
+				"transferred_at": int64(1772043027000),
+			}},
+			"totalResults": 1,
+			"totalPages":   1,
+			"currentPage":  1,
+		})
+	}))
+	defer api.Close()
+
+	cdpSrv := newMockCDPProxyServer(t, api)
+	defer cdpSrv.Close()
+
+	result, _, err := FetchTransfers(
+		context.Background(),
+		baseURLOf(api),
+		TransfersFilters{Page: 1},
+		testFetchOptionsWithCDP("", cdpSrv.URL),
+	)
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(result.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(result.Entries))
+	}
+	if result.Entries[0].FormerWorld != "Mystian" {
+		t.Fatalf("expected former_world 'Mystian', got %q", result.Entries[0].FormerWorld)
+	}
+	if result.Entries[0].DestinationWorld != "Solarian" {
+		t.Fatalf("expected destination_world 'Solarian', got %q", result.Entries[0].DestinationWorld)
+	}
+}
+
 func TestFetchAllTransfersFromAPI(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertPath(t, r, "/api/transfers")

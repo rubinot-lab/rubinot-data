@@ -1447,6 +1447,12 @@ func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
 		return nil, err
 	}
 
+	mappings := make([]scraper.WorldMapping, 0, len(worlds))
+	for _, w := range worlds {
+		mappings = append(mappings, scraper.WorldMapping{ID: w.ID, Name: w.Name})
+	}
+	scraper.UpdateWorldMappings(mappings)
+
 	validator := validation.NewValidator(worlds)
 	categories := validator.AllCategories()
 

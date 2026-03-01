@@ -28,6 +28,8 @@ type transfersAPIResponse struct {
 		PlayerLevel   int         `json:"player_level"`
 		FromWorldID   int         `json:"from_world_id"`
 		ToWorldID     int         `json:"to_world_id"`
+		FromWorld     string      `json:"from_world"`
+		ToWorld       string      `json:"to_world"`
 		TransferredAt interface{} `json:"transferred_at"`
 	} `json:"transfers"`
 	TotalResults int `json:"totalResults"`
@@ -180,14 +182,22 @@ func FetchAllTransfers(
 func mapTransferEntries(payload transfersAPIResponse) []domain.TransferEntry {
 	entries := make([]domain.TransferEntry, 0, len(payload.Transfers))
 	for _, row := range payload.Transfers {
+		formerWorld := strings.TrimSpace(row.FromWorld)
+		if formerWorld == "" {
+			formerWorld = worldNameByID(row.FromWorldID)
+		}
+		destWorld := strings.TrimSpace(row.ToWorld)
+		if destWorld == "" {
+			destWorld = worldNameByID(row.ToWorldID)
+		}
 		entries = append(entries, domain.TransferEntry{
 			ID:               row.ID,
 			PlayerID:         row.PlayerID,
 			PlayerName:       strings.TrimSpace(row.PlayerName),
 			Level:            row.PlayerLevel,
-			FormerWorld:      worldNameByID(row.FromWorldID),
+			FormerWorld:      formerWorld,
 			FormerWorldID:    row.FromWorldID,
-			DestinationWorld: worldNameByID(row.ToWorldID),
+			DestinationWorld: destWorld,
 			DestWorldID:      row.ToWorldID,
 			TransferDate:     unixAnyToRFC3339(row.TransferredAt),
 		})
