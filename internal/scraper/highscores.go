@@ -314,6 +314,104 @@ func FetchAllHighscoresPerWorld(
 	}, sources, nil
 }
 
+func FetchHighscoresCrossWorldAllVocations(
+	ctx context.Context,
+	baseURL string,
+	category validation.HighscoreCategory,
+	vocations []int,
+	worlds []validation.World,
+	opts FetchOptions,
+) (map[string][]domain.HighscoresResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchHighscoresCrossWorldAllVocations")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "highscores_cross_world"),
+		attribute.String("rubinot.category", category.Slug),
+		attribute.Int("rubinot.world_count", len(worlds)),
+		attribute.Int("rubinot.vocation_count", len(vocations)),
+	)
+
+	type fetchRequest struct {
+		worldName string
+		worldID   int
+		vocation  int
+		apiURL    string
+	}
+
+	requests := make([]fetchRequest, 0, len(worlds)*len(vocations))
+	apiURLs := make([]string, 0, len(worlds)*len(vocations))
+	for _, world := range worlds {
+		for _, voc := range vocations {
+			query := url.Values{}
+			query.Set("world", fmt.Sprintf("%d", world.ID))
+			query.Set("category", category.Slug)
+			query.Set("vocation", fmt.Sprintf("%d", voc))
+			apiURL := fmt.Sprintf("%s/api/highscores?%s", strings.TrimRight(baseURL, "/"), query.Encode())
+			requests = append(requests, fetchRequest{
+				worldName: world.Name,
+				worldID:   world.ID,
+				vocation:  voc,
+				apiURL:    apiURL,
+			})
+			apiURLs = append(apiURLs, apiURL)
+		}
+	}
+
+	client := NewClient(opts)
+	bodies, err := fetchBatchJSONBodies(ctx, client, apiURLs)
+	if err != nil {
+		return nil, apiURLs, err
+	}
+
+	grouped := make(map[string][]domain.HighscoresResult)
+	for i, body := range bodies {
+		req := requests[i]
+		var payload highscoresAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			continue
+		}
+
+		vocName := fallbackString(vocationNameByID(req.vocation), "Unknown")
+		items := make([]domain.Highscore, 0, len(payload.Players))
+		for _, row := range payload.Players {
+			items = append(items, domain.Highscore{
+				Rank:       row.Rank,
+				ID:         row.ID,
+				Name:       strings.TrimSpace(row.Name),
+				Vocation:   fallbackString(vocationNameByID(row.Vocation), vocName),
+				VocationID: row.Vocation,
+				World:      resolveHighscoreWorldName(row.WorldName, row.WorldID, req.worldName),
+				WorldID:    row.WorldID,
+				Level:      row.Level,
+				Value:      fmt.Sprintf("%v", row.Value),
+			})
+		}
+
+		totalRecords := payload.TotalCount
+		if totalRecords <= 0 {
+			totalRecords = len(items)
+		}
+
+		result := domain.HighscoresResult{
+			World:         req.worldName,
+			Category:      category.Slug,
+			Vocation:      vocName,
+			CachedAt:      payload.CachedAt,
+			HighscoreList: items,
+			HighscorePage: domain.HighscorePage{
+				CurrentPage:  1,
+				TotalPages:   1,
+				TotalRecords: totalRecords,
+			},
+			AvailableSeasons: payload.AvailableSeasons,
+		}
+		grouped[req.worldName] = append(grouped[req.worldName], result)
+	}
+
+	return grouped, apiURLs, nil
+}
+
 func fetchHighscoresPayload(
 	ctx context.Context,
 	client *Client,
