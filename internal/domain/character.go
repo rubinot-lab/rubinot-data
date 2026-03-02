@@ -111,3 +111,19 @@ type CharacterResult struct {
 	DisplayedAchievements        []DisplayedAchievement `json:"displayed_achievements,omitempty"`
 	CanSeeCharacterIdentifiers   bool                   `json:"can_see_character_identifiers,omitempty"`
 }
+
+type ComparisonSignals struct {
+	SameAccount        bool `json:"same_account"`
+	SameVipTime        bool `json:"same_vip_time"`
+	SameAccountCreated bool `json:"same_account_created"`
+	SameHouse          bool `json:"same_house"`
+	SameGuild          bool `json:"same_guild"`
+	SameOutfit         bool `json:"same_outfit"`
+	SameCreated        bool `json:"same_created"`
+	SameLoyaltyPoints  bool `json:"same_loyalty_points"`
+}
+
+type ComparisonResult struct {
+	Characters []CharacterResult `json:"characters"`
+	Signals    ComparisonSignals `json:"signals"`
+}
