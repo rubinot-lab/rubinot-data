@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -1574,12 +1575,13 @@ func postUpstreamRaw(c *gin.Context) (endpointResult, error) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path is required", err)
 	}
-	if !strings.HasPrefix(req.Path, "/api/") {
+	cleaned := path.Clean(req.Path)
+	if !strings.HasPrefix(cleaned, "/api/") {
 		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path must start with /api/", nil)
 	}
 
 	client := scraper.NewClient(resolvedOpts)
-	sourceURL := fmt.Sprintf("%s%s", strings.TrimRight(resolvedBaseURL, "/"), req.Path)
+	sourceURL := fmt.Sprintf("%s%s", strings.TrimRight(resolvedBaseURL, "/"), cleaned)
 	var raw any
 	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
@@ -1721,6 +1723,9 @@ func postHighscoresCrossWorld(c *gin.Context, validator *validation.Validator) (
 	if err := c.ShouldBindJSON(&req); err != nil {
 		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "vocations is required", err)
 	}
+	if len(req.Vocations) == 0 || len(req.Vocations) > 15 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "vocations must have 1-15 entries", nil)
+	}
 
 	worlds := validator.AllWorlds()
 	results, sources, err := scraper.FetchHighscoresCrossWorldAllVocations(
@@ -1746,6 +1751,9 @@ func postHighscoresMultiCategory(c *gin.Context, validator *validation.Validator
 	}
 	if len(req.Categories) > 10 {
 		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 10 categories", nil)
+	}
+	if len(req.Vocations) == 0 || len(req.Vocations) > 15 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "vocations must have 1-15 entries", nil)
 	}
 
 	worlds := validator.AllWorlds()
