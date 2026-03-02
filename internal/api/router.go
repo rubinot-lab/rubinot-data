@@ -196,6 +196,25 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/house/:world/:house_id", handleEndpoint(deprecatedHousesEndpoint))
 		v1.GET("/houses/towns", handleEndpoint(deprecatedHousesEndpoint))
 		v1.GET("/houses/:world/:town", handleEndpoint(deprecatedHousesEndpoint))
+
+		if getEnv("ENABLE_RAW_PROXY", "") == "true" {
+			v1.POST("/upstream/raw", handleEndpoint(postUpstreamRaw))
+		}
+		v1.POST("/characters/batch", handleEndpoint(postCharactersBatch))
+		v1.POST("/characters/compare", handleEndpoint(postCharactersCompare))
+		v1.POST("/highscores/:category/cross-world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return postHighscoresCrossWorld(c, getValidator())
+		}))
+		v1.POST("/highscores/multi-category", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return postHighscoresMultiCategory(c, getValidator())
+		}))
+		v1.POST("/guilds/batch", handleEndpoint(postGuildsBatch))
+		v1.POST("/auctions/filter", handleEndpoint(postAuctionsFilter))
+		v1.POST("/killstatistics/batch", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return postKillstatisticsBatch(c, getValidator())
+		}))
+		v1.GET("/bans", handleEndpoint(getBans))
+		v1.GET("/news/all", handleEndpoint(getNewsAll))
 	}
 
 	return router, nil
@@ -1546,4 +1565,330 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+func postUpstreamRaw(c *gin.Context) (endpointResult, error) {
+	var req struct {
+		Path string `json:"path" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path is required", err)
+	}
+	if !strings.HasPrefix(req.Path, "/api/") {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path must start with /api/", nil)
+	}
+
+	client := scraper.NewClient(resolvedOpts)
+	sourceURL := fmt.Sprintf("%s%s", strings.TrimRight(resolvedBaseURL, "/"), req.Path)
+	var raw any
+	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{
+		PayloadKey: "raw",
+		Payload:    raw,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func postCharactersBatch(c *gin.Context) (endpointResult, error) {
+	var req struct {
+		Names []string `json:"names" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
+	}
+	if len(req.Names) > 50 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 50 names per batch", nil)
+	}
+	if len(req.Names) == 0 {
+		return endpointResult{
+			PayloadKey: "characters",
+			Payload:    []domain.CharacterResult{},
+			Sources:    []string{},
+		}, nil
+	}
+
+	results, sources, err := scraper.FetchCharactersBatch(c.Request.Context(), resolvedBaseURL, req.Names, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{
+		PayloadKey: "characters",
+		Payload:    results,
+		Sources:    sources,
+	}, nil
+}
+
+func postCharactersCompare(c *gin.Context) (endpointResult, error) {
+	var req struct {
+		Names []string `json:"names" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
+	}
+	if len(req.Names) != 2 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "exactly 2 names required", nil)
+	}
+
+	results, sources, err := scraper.FetchCharactersBatch(c.Request.Context(), resolvedBaseURL, req.Names, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	if len(results) < 2 {
+		return endpointResult{Sources: sources}, validation.NewError(validation.ErrorEntityNotFound, "one or both characters not found", nil)
+	}
+
+	signals := compareCharacters(results[0], results[1])
+	return endpointResult{
+		PayloadKey: "comparison",
+		Payload: domain.ComparisonResult{
+			Characters: results,
+			Signals:    signals,
+		},
+		Sources: sources,
+	}, nil
+}
+
+func compareCharacters(a, b domain.CharacterResult) domain.ComparisonSignals {
+	sameAccount := false
+	if len(a.OtherCharacters) > 0 && len(b.OtherCharacters) > 0 {
+		aNames := make(map[string]bool, len(a.OtherCharacters))
+		for _, oc := range a.OtherCharacters {
+			aNames[strings.ToLower(strings.TrimSpace(oc.Name))] = true
+		}
+		bNames := make(map[string]bool, len(b.OtherCharacters))
+		for _, oc := range b.OtherCharacters {
+			bNames[strings.ToLower(strings.TrimSpace(oc.Name))] = true
+		}
+		if len(aNames) == len(bNames) && len(aNames) > 0 {
+			match := true
+			for k := range aNames {
+				if !bNames[k] {
+					match = false
+					break
+				}
+			}
+			sameAccount = match
+		}
+	}
+
+	sameVipTime := a.CharacterInfo.VIPTime > 0 && a.CharacterInfo.VIPTime == b.CharacterInfo.VIPTime
+	sameAccountCreated := a.CharacterInfo.AccountCreated != "" && a.CharacterInfo.AccountCreated == b.CharacterInfo.AccountCreated
+	sameCreated := a.CharacterInfo.Created != "" && a.CharacterInfo.Created == b.CharacterInfo.Created
+	sameLoyaltyPoints := a.CharacterInfo.LoyaltyPoints > 0 && a.CharacterInfo.LoyaltyPoints == b.CharacterInfo.LoyaltyPoints
+
+	sameHouse := false
+	if a.CharacterInfo.House != nil && b.CharacterInfo.House != nil {
+		sameHouse = a.CharacterInfo.House.HouseID == b.CharacterInfo.House.HouseID && a.CharacterInfo.House.HouseID > 0
+	}
+
+	sameGuild := false
+	if a.CharacterInfo.Guild != nil && b.CharacterInfo.Guild != nil {
+		sameGuild = a.CharacterInfo.Guild.ID == b.CharacterInfo.Guild.ID && a.CharacterInfo.Guild.ID > 0
+	}
+
+	sameOutfit := false
+	if a.CharacterInfo.Outfit != nil && b.CharacterInfo.Outfit != nil {
+		oa, ob := a.CharacterInfo.Outfit, b.CharacterInfo.Outfit
+		sameOutfit = oa.LookType == ob.LookType && oa.LookHead == ob.LookHead &&
+			oa.LookBody == ob.LookBody && oa.LookLegs == ob.LookLegs &&
+			oa.LookFeet == ob.LookFeet && oa.LookAddons == ob.LookAddons
+	}
+
+	return domain.ComparisonSignals{
+		SameAccount:        sameAccount,
+		SameVipTime:        sameVipTime,
+		SameAccountCreated: sameAccountCreated,
+		SameHouse:          sameHouse,
+		SameGuild:          sameGuild,
+		SameOutfit:         sameOutfit,
+		SameCreated:        sameCreated,
+		SameLoyaltyPoints:  sameLoyaltyPoints,
+	}
+}
+
+func postHighscoresCrossWorld(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	categoryInput := strings.TrimSpace(c.Param("category"))
+	category, categoryOK := validator.ResolveHighscoreCategory(categoryInput)
+	if !categoryOK {
+		return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, "highscore category does not exist", nil)
+	}
+
+	var req struct {
+		Vocations []int `json:"vocations" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "vocations is required", err)
+	}
+
+	worlds := validator.AllWorlds()
+	results, sources, err := scraper.FetchHighscoresCrossWorldAllVocations(
+		c.Request.Context(), resolvedBaseURL, category, req.Vocations, worlds, resolvedOpts,
+	)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{
+		PayloadKey: "highscores",
+		Payload:    results,
+		Sources:    sources,
+	}, nil
+}
+
+func postHighscoresMultiCategory(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	var req struct {
+		Categories []string `json:"categories" binding:"required"`
+		Vocations  []int    `json:"vocations" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "categories and vocations are required", err)
+	}
+	if len(req.Categories) > 10 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 10 categories", nil)
+	}
+
+	worlds := validator.AllWorlds()
+	allSources := make([]string, 0)
+	resultMap := make(map[string]map[string][]domain.HighscoresResult)
+
+	for _, catInput := range req.Categories {
+		category, categoryOK := validator.ResolveHighscoreCategory(strings.TrimSpace(catInput))
+		if !categoryOK {
+			return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, fmt.Sprintf("category not found: %s", catInput), nil)
+		}
+		results, sources, err := scraper.FetchHighscoresCrossWorldAllVocations(
+			c.Request.Context(), resolvedBaseURL, category, req.Vocations, worlds, resolvedOpts,
+		)
+		if err != nil {
+			return endpointResult{Sources: allSources}, err
+		}
+		allSources = append(allSources, sources...)
+		resultMap[category.Slug] = results
+	}
+
+	return endpointResult{
+		PayloadKey: "highscores",
+		Payload:    resultMap,
+		Sources:    allSources,
+	}, nil
+}
+
+func postGuildsBatch(c *gin.Context) (endpointResult, error) {
+	var req struct {
+		Names []string `json:"names" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
+	}
+	if len(req.Names) > 20 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 20 guild names per batch", nil)
+	}
+
+	results, sources, err := scraper.FetchGuildsBatch(c.Request.Context(), resolvedBaseURL, req.Names, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{
+		PayloadKey: "guilds",
+		Payload:    results,
+		Sources:    sources,
+	}, nil
+}
+
+func postAuctionsFilter(c *gin.Context) (endpointResult, error) {
+	var req struct {
+		Vocation int `json:"vocation"`
+		MinLevel int `json:"minLevel"`
+		MaxLevel int `json:"maxLevel"`
+		World    int `json:"world"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "invalid filter parameters", err)
+	}
+
+	query := url.Values{}
+	if req.Vocation > 0 {
+		query.Set("vocation", strconv.Itoa(req.Vocation))
+	}
+	if req.MinLevel > 0 {
+		query.Set("minLevel", strconv.Itoa(req.MinLevel))
+	}
+	if req.MaxLevel > 0 {
+		query.Set("maxLevel", strconv.Itoa(req.MaxLevel))
+	}
+	if req.World > 0 {
+		query.Set("world", strconv.Itoa(req.World))
+	}
+
+	sourceURL := fmt.Sprintf("%s/api/bazaar?%s", strings.TrimRight(resolvedBaseURL, "/"), query.Encode())
+	client := scraper.NewClient(resolvedOpts)
+	var raw any
+	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{
+		PayloadKey: "auctions",
+		Payload:    raw,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func postKillstatisticsBatch(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+	var req struct {
+		Worlds []string `json:"worlds" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "worlds is required", err)
+	}
+	if len(req.Worlds) > 20 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 20 worlds per batch", nil)
+	}
+
+	validWorlds := make([]validation.World, 0, len(req.Worlds))
+	for _, w := range req.Worlds {
+		name, id, ok := validator.WorldExists(w)
+		if !ok {
+			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, fmt.Sprintf("world not found: %s", w), nil)
+		}
+		validWorlds = append(validWorlds, validation.World{Name: name, ID: id})
+	}
+
+	results, sources, err := scraper.FetchAllWorldsKillstatistics(c.Request.Context(), resolvedBaseURL, validWorlds, resolvedOpts)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{
+		PayloadKey: "killstatistics",
+		Payload:    results,
+		Sources:    sources,
+	}, nil
+}
+
+func getBans(c *gin.Context) (endpointResult, error) {
+	sourceURL := fmt.Sprintf("%s/api/bans", strings.TrimRight(resolvedBaseURL, "/"))
+	client := scraper.NewClient(resolvedOpts)
+	var raw any
+	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{
+		PayloadKey: "bans",
+		Payload:    raw,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func getNewsAll(c *gin.Context) (endpointResult, error) {
+	sourceURL := fmt.Sprintf("%s/api/news", strings.TrimRight(resolvedBaseURL, "/"))
+	client := scraper.NewClient(resolvedOpts)
+	var raw any
+	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{
+		PayloadKey: "news",
+		Payload:    raw,
+		Sources:    []string{sourceURL},
+	}, nil
 }

@@ -46,6 +46,7 @@ const (
 	ErrorPvPFilterInvalid   = 30007
 	ErrorAuctionIDInvalid   = 30008
 	ErrorEndpointDeprecated = 30009
+	ErrorInvalidParameter   = 30010
 )
 
 const (
