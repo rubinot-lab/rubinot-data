@@ -66,13 +66,12 @@ type characterAPIResponse struct {
 		MostDamageIsPlayer int    `json:"mostdamage_is_player"`
 	} `json:"deaths"`
 	OtherCharacters []struct {
-		Name    string `json:"name"`
-		World   string `json:"world"`
-		WorldID int    `json:"world_id"`
-		Status  string `json:"status"`
-		Main    bool   `json:"main"`
-		Traded  bool   `json:"traded"`
-		Deleted bool   `json:"deleted"`
+		Name     string `json:"name"`
+		World    string `json:"world"`
+		WorldID  int    `json:"world_id"`
+		Level    int    `json:"level"`
+		Vocation string `json:"vocation"`
+		IsOnline bool   `json:"isOnline"`
 	} `json:"otherCharacters"`
 	AccountBadges         []map[string]any `json:"accountBadges"`
 	DisplayedAchievements []map[string]any `json:"displayedAchievements"`
@@ -176,12 +175,12 @@ func mapCharacterResponse(payload characterAPIResponse) domain.CharacterResult {
 			otherWorld = worldNameByID(row.WorldID)
 		}
 		others = append(others, domain.OtherCharacter{
-			Name:    strings.TrimSpace(row.Name),
-			World:   otherWorld,
-			Status:  strings.TrimSpace(row.Status),
-			Main:    row.Main,
-			Traded:  row.Traded,
-			Deleted: row.Deleted,
+			Name:     strings.TrimSpace(row.Name),
+			World:    otherWorld,
+			WorldID:  row.WorldID,
+			Level:    row.Level,
+			Vocation: strings.TrimSpace(row.Vocation),
+			IsOnline: row.IsOnline,
 		})
 	}
 

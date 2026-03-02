@@ -82,12 +82,12 @@ type AccountInformation struct {
 }
 
 type OtherCharacter struct {
-	Name    string `json:"name"`
-	World   string `json:"world"`
-	Status  string `json:"status,omitempty"`
-	Main    bool   `json:"main,omitempty"`
-	Traded  bool   `json:"traded,omitempty"`
-	Deleted bool   `json:"deleted,omitempty"`
+	Name     string `json:"name"`
+	World    string `json:"world"`
+	WorldID  int    `json:"world_id,omitempty"`
+	Level    int    `json:"level,omitempty"`
+	Vocation string `json:"vocation,omitempty"`
+	IsOnline bool   `json:"is_online,omitempty"`
 }
 
 type CharacterBadge struct {
