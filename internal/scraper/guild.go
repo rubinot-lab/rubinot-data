@@ -52,6 +52,38 @@ type guildAPIResponse struct {
 	} `json:"guild"`
 }
 
+func FetchGuildsBatch(ctx context.Context, baseURL string, names []string, opts FetchOptions) ([]domain.GuildResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchGuildsBatch")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "guild_batch"),
+		attribute.Int("rubinot.batch_size", len(names)),
+	)
+
+	apiURLs := make([]string, 0, len(names))
+	for _, name := range names {
+		apiURLs = append(apiURLs, fmt.Sprintf("%s/api/guilds/%s", strings.TrimRight(baseURL, "/"), url.PathEscape(strings.TrimSpace(name))))
+	}
+
+	client := NewClient(opts)
+	bodies, err := fetchBatchJSONBodies(ctx, client, apiURLs)
+	if err != nil {
+		return nil, apiURLs, err
+	}
+
+	results := make([]domain.GuildResult, 0, len(bodies))
+	for _, body := range bodies {
+		var payload guildAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			continue
+		}
+		results = append(results, mapGuildResponse(payload))
+	}
+
+	return results, apiURLs, nil
+}
+
 func FetchGuild(ctx context.Context, baseURL, guildName string, opts FetchOptions) (domain.GuildResult, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchGuild")
 	defer span.End()
