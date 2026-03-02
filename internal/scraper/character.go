@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
@@ -16,8 +15,8 @@ import (
 
 type characterAPIResponse struct {
 	Player *struct {
-		ID             int    `json:"id"`
-		AccountID      int    `json:"account_id"`
+		ID             *int   `json:"id"`
+		AccountID      *int   `json:"account_id"`
 		Name           string `json:"name"`
 		Level          int    `json:"level"`
 		Vocation       string `json:"vocation"`
@@ -73,12 +72,20 @@ type characterAPIResponse struct {
 		Vocation string `json:"vocation"`
 		IsOnline bool   `json:"isOnline"`
 	} `json:"otherCharacters"`
-	AccountBadges         []map[string]any `json:"accountBadges"`
-	DisplayedAchievements []map[string]any `json:"displayedAchievements"`
-	BanInfo               map[string]any   `json:"banInfo"`
-	IsAdmin               bool             `json:"isAdmin"`
-	CanSeeDeathDetails    bool             `json:"canSeeDeathDetails"`
-	FoundByOldName        bool             `json:"foundByOldName"`
+	AccountBadges []struct {
+		ID       int    `json:"id"`
+		ClientID int    `json:"clientId"`
+		Name     string `json:"name"`
+		URL      string `json:"url"`
+	} `json:"accountBadges"`
+	DisplayedAchievements []struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+	} `json:"displayedAchievements"`
+	BanInfo                      map[string]any `json:"banInfo"`
+	CanSeeCharacterIdentifiers   bool           `json:"canSeeCharacterIdentifiers"`
+	CanSeeDeathDetails           bool           `json:"canSeeDeathDetails"`
+	FoundByOldName               bool           `json:"foundByOldName"`
 }
 
 func FetchCharacter(ctx context.Context, baseURL, characterName string, opts FetchOptions) (domain.CharacterResult, string, error) {
@@ -186,12 +193,17 @@ func mapCharacterResponse(payload characterAPIResponse) domain.CharacterResult {
 
 	badges := make([]domain.CharacterBadge, 0, len(payload.AccountBadges))
 	for _, row := range payload.AccountBadges {
-		badges = append(badges, domain.CharacterBadge{ID: intFromAny(row["id"]), Name: stringFromAny(row["name"])})
+		badges = append(badges, domain.CharacterBadge{
+			ID:       row.ID,
+			ClientID: row.ClientID,
+			Name:     strings.TrimSpace(row.Name),
+			URL:      strings.TrimSpace(row.URL),
+		})
 	}
 
 	displayed := make([]domain.DisplayedAchievement, 0, len(payload.DisplayedAchievements))
 	for _, row := range payload.DisplayedAchievements {
-		displayed = append(displayed, domain.DisplayedAchievement{ID: intFromAny(row["id"]), Name: stringFromAny(row["name"])})
+		displayed = append(displayed, domain.DisplayedAchievement{ID: row.ID, Name: strings.TrimSpace(row.Name)})
 	}
 
 	marriedTo := ""
@@ -216,6 +228,7 @@ func mapCharacterResponse(payload characterAPIResponse) domain.CharacterResult {
 	info := domain.CharacterInfo{
 		ID:                player.ID,
 		AccountID:         player.AccountID,
+
 		Name:              strings.TrimSpace(player.Name),
 		FormerNames:       player.FormerNames,
 		Sex:               strings.TrimSpace(player.Sex),
@@ -253,30 +266,13 @@ func mapCharacterResponse(payload characterAPIResponse) domain.CharacterResult {
 	}
 
 	return domain.CharacterResult{
-		CharacterInfo:         info,
-		Deaths:                deaths,
-		AccountInfo:           account,
-		OtherCharacters:       others,
-		AccountBadges:         badges,
-		DisplayedAchievements: displayed,
-	}
-}
-
-func intFromAny(value any) int {
-	switch typed := value.(type) {
-	case int:
-		return typed
-	case int32:
-		return int(typed)
-	case int64:
-		return int(typed)
-	case float64:
-		return int(typed)
-	case string:
-		parsed, _ := strconv.Atoi(strings.TrimSpace(typed))
-		return parsed
-	default:
-		return 0
+		CharacterInfo:                info,
+		Deaths:                       deaths,
+		AccountInfo:                  account,
+		OtherCharacters:              others,
+		AccountBadges:                badges,
+		DisplayedAchievements:        displayed,
+		CanSeeCharacterIdentifiers:   payload.CanSeeCharacterIdentifiers,
 	}
 }
 

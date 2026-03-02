@@ -69,8 +69,8 @@ func TestFetchCharacterFromAPI(t *testing.T) {
 	if result.CharacterInfo.Name != "Terah" {
 		t.Fatalf("unexpected character name: %s", result.CharacterInfo.Name)
 	}
-	if result.CharacterInfo.AccountID != 170893 {
-		t.Fatalf("unexpected account id: %d", result.CharacterInfo.AccountID)
+	if result.CharacterInfo.AccountID == nil || *result.CharacterInfo.AccountID != 170893 {
+		t.Fatalf("unexpected account id: %v", result.CharacterInfo.AccountID)
 	}
 	if len(result.Deaths) != 1 {
 		t.Fatalf("expected one death entry, got %d", len(result.Deaths))

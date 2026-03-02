@@ -26,8 +26,8 @@ type CharacterOutfit struct {
 }
 
 type CharacterInfo struct {
-	ID                int              `json:"id,omitempty"`
-	AccountID         int              `json:"account_id,omitempty"`
+	ID                *int             `json:"id,omitempty"`
+	AccountID         *int             `json:"account_id,omitempty"`
 	Name              string           `json:"name"`
 	FormerNames       []string         `json:"former_names,omitempty"`
 	Traded            bool             `json:"traded,omitempty"`
@@ -91,8 +91,10 @@ type OtherCharacter struct {
 }
 
 type CharacterBadge struct {
-	ID   int    `json:"id,omitempty"`
-	Name string `json:"name,omitempty"`
+	ID       int    `json:"id,omitempty"`
+	ClientID int    `json:"client_id,omitempty"`
+	Name     string `json:"name,omitempty"`
+	URL      string `json:"url,omitempty"`
 }
 
 type DisplayedAchievement struct {
@@ -101,10 +103,11 @@ type DisplayedAchievement struct {
 }
 
 type CharacterResult struct {
-	CharacterInfo         CharacterInfo          `json:"character_info"`
-	Deaths                []CharacterDeath       `json:"deaths,omitempty"`
-	AccountInfo           *AccountInformation    `json:"account_information,omitempty"`
-	OtherCharacters       []OtherCharacter       `json:"other_characters,omitempty"`
-	AccountBadges         []CharacterBadge       `json:"account_badges,omitempty"`
-	DisplayedAchievements []DisplayedAchievement `json:"displayed_achievements,omitempty"`
+	CharacterInfo                CharacterInfo          `json:"character_info"`
+	Deaths                       []CharacterDeath       `json:"deaths,omitempty"`
+	AccountInfo                  *AccountInformation    `json:"account_information,omitempty"`
+	OtherCharacters              []OtherCharacter       `json:"other_characters,omitempty"`
+	AccountBadges                []CharacterBadge       `json:"account_badges,omitempty"`
+	DisplayedAchievements        []DisplayedAchievement `json:"displayed_achievements,omitempty"`
+	CanSeeCharacterIdentifiers   bool                   `json:"can_see_character_identifiers,omitempty"`
 }
