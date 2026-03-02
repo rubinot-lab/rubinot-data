@@ -1600,8 +1600,8 @@ func postCharactersBatch(c *gin.Context) (endpointResult, error) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
 	}
-	if len(req.Names) > 50 {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 50 names per batch", nil)
+	if len(req.Names) > 1000 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 1000 names per batch", nil)
 	}
 	if len(req.Names) == 0 {
 		return endpointResult{
