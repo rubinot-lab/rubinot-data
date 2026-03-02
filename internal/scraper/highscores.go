@@ -17,13 +17,14 @@ const highscoresPageSize = 50
 
 type highscoresAPIResponse struct {
 	Players []struct {
-		Rank     int         `json:"rank"`
-		ID       int         `json:"id"`
-		Name     string      `json:"name"`
-		Level    int         `json:"level"`
-		Vocation int         `json:"vocation"`
-		WorldID  int         `json:"world_id"`
-		Value    interface{} `json:"value"`
+		Rank      int         `json:"rank"`
+		ID        int         `json:"id"`
+		Name      string      `json:"name"`
+		Level     int         `json:"level"`
+		Vocation  int         `json:"vocation"`
+		WorldID   int         `json:"world_id"`
+		WorldName string      `json:"worldName"`
+		Value     interface{} `json:"value"`
 	} `json:"players"`
 	TotalCount       int   `json:"totalCount"`
 	CachedAt         int64 `json:"cachedAt"`
@@ -108,7 +109,7 @@ func FetchAllHighscores(
 			Name:       strings.TrimSpace(row.Name),
 			Vocation:   fallbackString(vocationNameByID(row.Vocation), "Unknown"),
 			VocationID: row.Vocation,
-			World:      fallbackString(worldNameByID(row.WorldID), world),
+			World:      resolveHighscoreWorldName(row.WorldName, row.WorldID, world),
 			WorldID:    row.WorldID,
 			Level:      row.Level,
 			Value:      fmt.Sprintf("%v", row.Value),
@@ -214,7 +215,7 @@ func FetchAllHighscoresAllWorlds(
 			Name:       strings.TrimSpace(row.Name),
 			Vocation:   fallbackString(vocationNameByID(row.Vocation), "Unknown"),
 			VocationID: row.Vocation,
-			World:      fallbackString(worldNameByID(row.WorldID), "all"),
+			World:      resolveHighscoreWorldName(row.WorldName, row.WorldID, "all"),
 			WorldID:    row.WorldID,
 			Level:      row.Level,
 			Value:      fmt.Sprintf("%v", row.Value),
@@ -388,7 +389,7 @@ func mapHighscoresResponse(
 			Name:       strings.TrimSpace(row.Name),
 			Vocation:   fallbackString(vocationNameByID(row.Vocation), "Unknown"),
 			VocationID: row.Vocation,
-			World:      fallbackString(worldNameByID(row.WorldID), world),
+			World:      resolveHighscoreWorldName(row.WorldName, row.WorldID, world),
 			WorldID:    row.WorldID,
 			Level:      row.Level,
 			Value:      fmt.Sprintf("%v", row.Value),
@@ -408,6 +409,16 @@ func mapHighscoresResponse(
 		},
 		AvailableSeasons: payload.AvailableSeasons,
 	}, nil
+}
+
+func resolveHighscoreWorldName(upstreamName string, worldID int, fallback string) string {
+	if trimmed := strings.TrimSpace(upstreamName); trimmed != "" {
+		return trimmed
+	}
+	if resolved := worldNameByID(worldID); resolved != "" {
+		return resolved
+	}
+	return fallback
 }
 
 func fallbackString(value, fallback string) string {
