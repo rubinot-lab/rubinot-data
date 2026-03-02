@@ -88,6 +88,43 @@ type characterAPIResponse struct {
 	FoundByOldName               bool           `json:"foundByOldName"`
 }
 
+func FetchCharactersBatch(ctx context.Context, baseURL string, names []string, opts FetchOptions) ([]domain.CharacterResult, []string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.FetchCharactersBatch")
+	defer span.End()
+
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "character_batch"),
+		attribute.Int("rubinot.batch_size", len(names)),
+	)
+
+	apiURLs := make([]string, 0, len(names))
+	for _, name := range names {
+		query := url.Values{}
+		query.Set("name", strings.TrimSpace(name))
+		apiURLs = append(apiURLs, fmt.Sprintf("%s/api/characters/search?%s", strings.TrimRight(baseURL, "/"), query.Encode()))
+	}
+
+	client := NewClient(opts)
+	bodies, err := fetchBatchJSONBodies(ctx, client, apiURLs)
+	if err != nil {
+		return nil, apiURLs, err
+	}
+
+	results := make([]domain.CharacterResult, 0, len(bodies))
+	for _, body := range bodies {
+		var payload characterAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			continue
+		}
+		if payload.Player == nil {
+			continue
+		}
+		results = append(results, mapCharacterResponse(payload))
+	}
+
+	return results, apiURLs, nil
+}
+
 func FetchCharacter(ctx context.Context, baseURL, characterName string, opts FetchOptions) (domain.CharacterResult, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchCharacter")
 	defer span.End()
