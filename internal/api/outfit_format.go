@@ -4,14 +4,27 @@ import (
 	"bytes"
 	"fmt"
 	"image"
+	"image/color"
 	"image/color/palette"
-	"image/draw"
 	"image/gif"
 	"image/png"
 	"strings"
 )
 
-const outfitGIFFrameDelay = 8
+const (
+	outfitGIFDefaultFrameDelay = 8
+	outfitGIFTwoFrameDelay     = 30
+)
+
+var (
+	outfitGIFOpaquePalette = color.Palette(palette.Plan9[:255])
+	outfitGIFPalette       = func() color.Palette {
+		p := make(color.Palette, 1+len(outfitGIFOpaquePalette))
+		p[0] = color.NRGBA{R: 0, G: 0, B: 0, A: 0}
+		copy(p[1:], outfitGIFOpaquePalette)
+		return p
+	}()
+)
 
 func maybeFormatOutfitImage(format string, body []byte, contentType string) ([]byte, string, error) {
 	requested := strings.ToLower(strings.TrimSpace(format))
@@ -51,22 +64,48 @@ func convertOutfitSpritePNGToGIF(body []byte) ([]byte, error) {
 
 	frames := make([]*image.Paletted, 0, frameCount)
 	delays := make([]int, 0, frameCount)
+	disposals := make([]byte, 0, frameCount)
+	frameDelay := frameDelayForCount(frameCount)
 	for i := 0; i < frameCount; i++ {
-		paletted := image.NewPaletted(image.Rect(0, 0, frameWidth, height), palette.Plan9)
+		paletted := image.NewPaletted(image.Rect(0, 0, frameWidth, height), outfitGIFPalette)
 		srcPoint := image.Point{X: bounds.Min.X + (i * frameWidth), Y: bounds.Min.Y}
-		draw.FloydSteinberg.Draw(paletted, paletted.Rect, sprite, srcPoint)
+		drawFrameWithTransparency(paletted, sprite, srcPoint)
 		frames = append(frames, paletted)
-		delays = append(delays, outfitGIFFrameDelay)
+		delays = append(delays, frameDelay)
+		disposals = append(disposals, gif.DisposalBackground)
 	}
 
 	var buf bytes.Buffer
 	if err := gif.EncodeAll(&buf, &gif.GIF{
-		Image:     frames,
-		Delay:     delays,
-		LoopCount: 0,
+		Image:           frames,
+		Delay:           delays,
+		Disposal:        disposals,
+		BackgroundIndex: 0,
+		LoopCount:       0,
 	}); err != nil {
 		return nil, fmt.Errorf("encode outfit gif: %w", err)
 	}
 
 	return buf.Bytes(), nil
+}
+
+func frameDelayForCount(frameCount int) int {
+	if frameCount == 2 {
+		return outfitGIFTwoFrameDelay
+	}
+	return outfitGIFDefaultFrameDelay
+}
+
+func drawFrameWithTransparency(dst *image.Paletted, src image.Image, srcPoint image.Point) {
+	bounds := dst.Bounds()
+	for y := 0; y < bounds.Dy(); y++ {
+		for x := 0; x < bounds.Dx(); x++ {
+			pixel := color.NRGBAModel.Convert(src.At(srcPoint.X+x, srcPoint.Y+y)).(color.NRGBA)
+			if pixel.A < 128 {
+				dst.SetColorIndex(x, y, 0)
+				continue
+			}
+			dst.SetColorIndex(x, y, uint8(1+outfitGIFOpaquePalette.Index(pixel)))
+		}
+	}
 }

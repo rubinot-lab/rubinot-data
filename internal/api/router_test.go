@@ -32,6 +32,27 @@ const eventsFixtureHTML = `
 </html>
 `
 
+type openAPIParam struct {
+	Name     string `json:"name"`
+	In       string `json:"in"`
+	Required bool   `json:"required"`
+}
+
+type openAPITagMeta struct {
+	Name string `json:"name"`
+}
+
+type openAPIRequestBodyMeta struct {
+	Required bool `json:"required"`
+	Content  map[string]struct {
+		Schema map[string]any `json:"schema"`
+	} `json:"content"`
+}
+
+type openAPIResponseMeta struct {
+	Description string `json:"description"`
+}
+
 func TestRouterIntegrationHappyPaths(t *testing.T) {
 	api := newHappyAPIUpstream(t)
 	defer api.Close()
@@ -154,6 +175,99 @@ func TestRouterOutfitBinary(t *testing.T) {
 		if !strings.Contains(sourceURL, "type=") {
 			t.Fatalf("path %q: expected normalized type query in X-Source-Url, got %q", path, sourceURL)
 		}
+	}
+}
+
+func TestRouterOpenAPISpecIncludesRegisteredRoutes(t *testing.T) {
+	api := newHappyAPIUpstream(t)
+	defer api.Close()
+
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
+	rec := performRequest(router, http.MethodGet, "/openapi.json")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.Contains(got, "application/json") {
+		t.Fatalf("expected application/json content-type, got %q", got)
+	}
+
+	var spec struct {
+		OpenAPI string           `json:"openapi"`
+		Tags    []openAPITagMeta `json:"tags"`
+		Paths   map[string]map[string]struct {
+			Tags        []string                       `json:"tags"`
+			Parameters  []openAPIParam                 `json:"parameters"`
+			RequestBody openAPIRequestBodyMeta         `json:"requestBody"`
+			Responses   map[string]openAPIResponseMeta `json:"responses"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &spec); err != nil {
+		t.Fatalf("decode openapi response: %v", err)
+	}
+	if spec.OpenAPI == "" {
+		t.Fatal("expected openapi version in /openapi.json")
+	}
+	if !hasOpenAPITag(spec.Tags, "characters") || !hasOpenAPITag(spec.Tags, "highscores") || !hasOpenAPITag(spec.Tags, "auctions") {
+		t.Fatalf("expected docs tags to include category groups, got %#v", spec.Tags)
+	}
+
+	if _, ok := spec.Paths["/v1/news/all"]["get"]; !ok {
+		t.Fatal("expected /v1/news/all GET in generated openapi paths")
+	}
+	charBatchPost, ok := spec.Paths["/v1/characters/batch"]["post"]
+	if !ok {
+		t.Fatal("expected /v1/characters/batch POST in generated openapi paths")
+	}
+	if len(charBatchPost.Tags) != 1 || charBatchPost.Tags[0] != "characters" {
+		t.Fatalf("expected /v1/characters/batch POST to be grouped under characters tag, got %#v", charBatchPost.Tags)
+	}
+	if !charBatchPost.RequestBody.Required {
+		t.Fatal("expected /v1/characters/batch POST to require a request body")
+	}
+	if _, ok := charBatchPost.RequestBody.Content["application/json"]; !ok {
+		t.Fatal("expected /v1/characters/batch POST to document application/json request body")
+	}
+	if _, ok := charBatchPost.Responses["200"]; !ok {
+		t.Fatal("expected /v1/characters/batch POST to document 200 response")
+	}
+	if _, ok := charBatchPost.Responses["400"]; !ok {
+		t.Fatal("expected /v1/characters/batch POST to document 400 response")
+	}
+	if _, ok := charBatchPost.Responses["502"]; !ok {
+		t.Fatal("expected /v1/characters/batch POST to document 502 response")
+	}
+
+	charComparePost, ok := spec.Paths["/v1/characters/compare"]["post"]
+	if !ok {
+		t.Fatal("expected /v1/characters/compare POST in generated openapi paths")
+	}
+	if _, ok := charComparePost.Responses["404"]; !ok {
+		t.Fatal("expected /v1/characters/compare POST to document 404 response")
+	}
+
+	worldGet, ok := spec.Paths["/v1/world/{name}"]["get"]
+	if !ok {
+		t.Fatal("expected /v1/world/{name} GET in generated openapi paths")
+	}
+	if !hasOpenAPIParameter(worldGet.Parameters, "name", "path", true) {
+		t.Fatal("expected /v1/world/{name} GET to include required path parameter name")
+	}
+
+	outfitGet, ok := spec.Paths["/v1/outfit"]["get"]
+	if !ok {
+		t.Fatal("expected /v1/outfit GET in generated openapi paths")
+	}
+	if len(outfitGet.Tags) != 1 || outfitGet.Tags[0] != "outfit" {
+		t.Fatalf("expected /v1/outfit GET to be grouped under outfit tag, got %#v", outfitGet.Tags)
+	}
+	if !hasOpenAPIParameter(outfitGet.Parameters, "format", "query", false) {
+		t.Fatal("expected /v1/outfit GET to include format query parameter")
 	}
 }
 
@@ -503,6 +617,24 @@ func decodeJSONBody(t *testing.T, rec *httptest.ResponseRecorder) map[string]any
 		t.Fatalf("failed to decode JSON response %q: %v", rec.Body.String(), err)
 	}
 	return out
+}
+
+func hasOpenAPIParameter(params []openAPIParam, name, in string, required bool) bool {
+	for _, param := range params {
+		if param.Name == name && param.In == in && param.Required == required {
+			return true
+		}
+	}
+	return false
+}
+
+func hasOpenAPITag(tags []openAPITagMeta, name string) bool {
+	for _, tag := range tags {
+		if tag.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func assertEnvelope(t *testing.T, body map[string]any, expectedHTTPCode int, expectedErrorCode int) {

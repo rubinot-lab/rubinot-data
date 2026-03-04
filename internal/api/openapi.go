@@ -1,101 +1,658 @@
 package api
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-const openAPISpec = `{
-  "openapi": "3.0.3",
-  "info": {
-    "title": "rubinot-data API",
-    "version": "v0.2.0",
-    "description": "Tibia scraper and data aggregation API."
-  },
-  "servers": [
-    { "url": "/", "description": "Current environment" }
-  ],
-  "paths": {
-    "/": {"get":{"summary":"Service status","responses":{"200":{"description":"OK"}}}},
-    "/ping": {"get":{"summary":"Pong check","responses":{"200":{"description":"OK"}}}},
-    "/healthz": {"get":{"summary":"Kubernetes health check","responses":{"200":{"description":"OK"}}}},
-    "/readyz": {"get":{"summary":"Kubernetes ready check","responses":{"200":{"description":"OK"}}}},
-    "/versions": {"get":{"summary":"Service version metadata","responses":{"200":{"description":"Version info"}}}},
-    "/metrics": {"get":{"summary":"Prometheus metrics","responses":{"200":{"description":"Metrics payload"}}}},
-    "/openapi.json": {"get":{"summary":"OpenAPI spec","responses":{"200":{"description":"OpenAPI document"}}}},
-    "/docs": {"get":{"summary":"Interactive docs","responses":{"200":{"description":"Swagger UI"}}}},
+type openAPIDocument struct {
+	OpenAPI    string                                 `json:"openapi"`
+	Info       openAPIInfo                            `json:"info"`
+	Servers    []openAPIServer                        `json:"servers"`
+	Tags       []openAPITag                           `json:"tags,omitempty"`
+	Paths      map[string]map[string]openAPIOperation `json:"paths"`
+	Components map[string]map[string]map[string]any   `json:"components,omitempty"`
+}
 
-    "/v1/worlds": {"get":{"summary":"List all worlds","tags":["v1"],"responses":{"200":{"description":"Worlds"}}}},
-    "/v1/world/{name}": {"get":{"summary":"Get one world","tags":["v1"],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"World detail"},"400":{"description":"Invalid world"}}}},
-    "/v1/world/{name}/details": {"get":{"summary":"Get world with all online character details","tags":["v1","world"],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"World details aggregate"}}}},
-    "/v1/world/{name}/dashboard": {"get":{"summary":"Get world dashboard aggregate","tags":["v1","world"],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"World dashboard aggregate"}}}},
-    "/v1/highscores/categories": {"get":{"summary":"List highscores categories","tags":["v1","highscores"],"responses":{"200":{"description":"Highscores categories"}}}},
-    "/v1/highscores/{world}": {"get":{"summary":"Redirect to experience highscores","tags":["v1","highscores"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"302":{"description":"Redirect"}}}},
-    "/v1/highscores/{world}/{category}": {"get":{"summary":"Redirect to category highscores","tags":["v1","highscores"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}},{"name":"category","in":"path","required":true,"schema":{"type":"string","enum":["achievements","battlepass","totalbountypoints","axe","club","bosstotalpoints","distance","dromelevel","linked_tasks","experience","exp_today","fishing","fist","charmtotalpoints","magic","prestigepoints","shielding","sword","totalweeklytasks","charmunlockpoints"]}}],"responses":{"302":{"description":"Redirect"}}}},
-    "/v1/highscores/{world}/{category}/{vocation}": {"get":{"summary":"Redirect to highscores page 1","tags":["v1","highscores"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}},{"name":"category","in":"path","required":true,"schema":{"type":"string","enum":["achievements","battlepass","totalbountypoints","axe","club","bosstotalpoints","distance","dromelevel","linked_tasks","experience","exp_today","fishing","fist","charmtotalpoints","magic","prestigepoints","shielding","sword","totalweeklytasks","charmunlockpoints"]}},{"name":"vocation","in":"path","required":true,"schema":{"type":"string","enum":["all","none","knights","paladins","sorcerers","druids","monks","(all)"]}}],"responses":{"302":{"description":"Redirect"}}}},
-    "/v1/highscores/{world}/{category}/{vocation}/all": {"get":{"summary":"Get highscores aggregated all pages","tags":["v1","highscores"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}},{"name":"category","in":"path","required":true,"schema":{"type":"string","enum":["achievements","battlepass","totalbountypoints","axe","club","bosstotalpoints","distance","dromelevel","linked_tasks","experience","exp_today","fishing","fist","charmtotalpoints","magic","prestigepoints","shielding","sword","totalweeklytasks","charmunlockpoints"]}},{"name":"vocation","in":"path","required":true,"schema":{"type":"string","enum":["all","none","knights","paladins","sorcerers","druids","monks","(all)"]}}],"responses":{"200":{"description":"All highscores entries"}}}},
-    "/v1/highscores/{world}/{category}/{vocation}/{page}": {"get":{"summary":"Get highscores by world/category/vocation/page","tags":["v1","highscores"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}},{"name":"category","in":"path","required":true,"schema":{"type":"string","enum":["achievements","battlepass","totalbountypoints","axe","club","bosstotalpoints","distance","dromelevel","linked_tasks","experience","exp_today","fishing","fist","charmtotalpoints","magic","prestigepoints","shielding","sword","totalweeklytasks","charmunlockpoints"]}},{"name":"vocation","in":"path","required":true,"schema":{"type":"string","enum":["all","none","knights","paladins","sorcerers","druids","monks","(all)"]}},{"name":"page","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Highscores"}}}},
-    "/v1/killstatistics/{world}": {"get":{"summary":"Get killstatistics","tags":["v1"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Killstats"}}}},
-    "/v1/news/id/{news_id}": {"get":{"summary":"News by id","tags":["v1","news"],"parameters":[{"name":"news_id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"News entry"},"404":{"description":"Not found"}}}},
-    "/v1/news/archive": {"get":{"summary":"News archive","tags":["v1","news"],"responses":{"200":{"description":"News archive"}}}},
-    "/v1/news/latest": {"get":{"summary":"Latest news","tags":["v1","news"],"responses":{"200":{"description":"Latest news"}}}},
-    "/v1/news/newsticker": {"get":{"summary":"News ticker","tags":["v1","news"],"responses":{"200":{"description":"News ticker"}}}},
-    "/v1/boosted": {"get":{"summary":"Boosted boss and creature","tags":["v1"],"responses":{"200":{"description":"Boosted entities"}}}},
-    "/v1/maintenance": {"get":{"summary":"Maintenance status","tags":["v1"],"responses":{"200":{"description":"Maintenance info"}}}},
-    "/v1/geo-language": {"get":{"summary":"Geo language detection","tags":["v1"],"responses":{"200":{"description":"Geo language"}}}},
-    "/v1/outfit": {"get":{"summary":"Outfit image proxy","tags":["v1"],"parameters":[{"name":"type","in":"query","required":false,"schema":{"type":"integer"}},{"name":"head","in":"query","required":false,"schema":{"type":"integer"}},{"name":"body","in":"query","required":false,"schema":{"type":"integer"}},{"name":"legs","in":"query","required":false,"schema":{"type":"integer"}},{"name":"feet","in":"query","required":false,"schema":{"type":"integer"}},{"name":"addons","in":"query","required":false,"schema":{"type":"integer"}},{"name":"direction","in":"query","required":false,"schema":{"type":"integer","enum":[0,1,2,3]}},{"name":"animated","in":"query","required":false,"schema":{"type":"integer","enum":[0,1]}},{"name":"walk","in":"query","required":false,"schema":{"type":"integer","enum":[0,1]}},{"name":"size","in":"query","required":false,"schema":{"type":"integer"}},{"name":"format","in":"query","required":false,"schema":{"type":"string","enum":["png","gif"]}}],"responses":{"200":{"description":"Outfit image"}}}},
-    "/v1/outfit/{name}": {"get":{"summary":"Outfit image by character name","tags":["v1"],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}},{"name":"direction","in":"query","required":false,"schema":{"type":"integer","enum":[0,1,2,3]}},{"name":"animated","in":"query","required":false,"schema":{"type":"integer","enum":[0,1]}},{"name":"walk","in":"query","required":false,"schema":{"type":"integer","enum":[0,1]}},{"name":"size","in":"query","required":false,"schema":{"type":"integer"}},{"name":"format","in":"query","required":false,"schema":{"type":"string","enum":["png","gif"]}}],"responses":{"200":{"description":"Outfit image"}}}},
-    "/v1/events/schedule": {"get":{"summary":"Events schedule","tags":["v1","events"],"responses":{"200":{"description":"Event schedule"}}}},
-    "/v1/events/calendar": {"get":{"summary":"Events calendar JSON","tags":["v1","events"],"responses":{"200":{"description":"Event calendar"}}}},
-    "/v1/auctions/current/all/details": {"get":{"summary":"Current auctions details (all pages)","tags":["v1","auctions"],"responses":{"200":{"description":"All current auction details"}}}},
-    "/v1/auctions/current/{page}/details": {"get":{"summary":"Current auctions details by page","tags":["v1","auctions"],"parameters":[{"name":"page","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Current auction detail page"}}}},
-    "/v1/auctions/current/all": {"get":{"summary":"Current auctions (all pages)","tags":["v1","auctions"],"responses":{"200":{"description":"All current auctions"}}}},
-    "/v1/auctions/current/{page}": {"get":{"summary":"Current auctions","tags":["v1","auctions"],"parameters":[{"name":"page","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Current auction page"}}}},
-    "/v1/auctions/history/all/details": {"get":{"summary":"Auction history details (all pages)","tags":["v1","auctions"],"responses":{"200":{"description":"All auction history details"}}}},
-    "/v1/auctions/history/{page}/details": {"get":{"summary":"Auction history details by page","tags":["v1","auctions"],"parameters":[{"name":"page","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Auction history detail page"}}}},
-    "/v1/auctions/history/all": {"get":{"summary":"Auction history (all pages)","tags":["v1","auctions"],"responses":{"200":{"description":"All auction history"}}}},
-    "/v1/auctions/history/{page}": {"get":{"summary":"Auction history","tags":["v1","auctions"],"parameters":[{"name":"page","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Auction history page"}}}},
-    "/v1/auctions/{id}": {"get":{"summary":"Auction detail","tags":["v1","auctions"],"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Auction details"},"404":{"description":"Not found"}}}},
-    "/v1/deaths/{world}/all": {"get":{"summary":"Deaths (all pages)","tags":["v1"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"All deaths"}}}},
-    "/v1/deaths/{world}": {"get":{"summary":"Deaths","tags":["v1"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Deaths"}}}},
-    "/v1/banishments/{world}/all": {"get":{"summary":"Banishments (all pages)","tags":["v1"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"All banishments"}}}},
-    "/v1/banishments/{world}": {"get":{"summary":"Banishments","tags":["v1"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Banishments"}}}},
-    "/v1/transfers/all": {"get":{"summary":"Transfers (all pages)","tags":["v1"],"responses":{"200":{"description":"All transfers"}}}},
-    "/v1/transfers": {"get":{"summary":"Transfers","tags":["v1"],"responses":{"200":{"description":"Transfers"}}}},
-    "/v1/character/{name}": {"get":{"summary":"Character by name","tags":["v1"],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Character details"},"404":{"description":"Not found"}}}},
-    "/v1/guild/{name}": {"get":{"summary":"Guild by name","tags":["v1","guild"],"parameters":[{"name":"name","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Guild detail"},"404":{"description":"Not found"}}}},
-    "/v1/guilds/{world}/all/details": {"get":{"summary":"Guilds details by world (all pages)","tags":["v1","guild"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Guild details list"}}}},
-    "/v1/guilds/{world}/all": {"get":{"summary":"Guilds by world (all pages)","tags":["v1","guild"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Guilds list all pages"}}}},
-    "/v1/guilds/{world}/{page}": {"get":{"summary":"Guilds by world page","tags":["v1","guild"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}},{"name":"page","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"Guilds list page"}}}},
-    "/v1/guilds/{world}": {"get":{"summary":"Guilds by world","tags":["v1","guild"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"Guilds list"}}}},
-    "/v1/house/{world}/{house_id}": {"get":{"summary":"House by id","tags":["v1","houses"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}},{"name":"house_id","in":"path","required":true,"schema":{"type":"integer","minimum":1}}],"responses":{"200":{"description":"House detail"},"404":{"description":"Not found"}}}},
-    "/v1/houses/towns": {"get":{"summary":"Deprecated houses towns endpoint","tags":["v1","houses"],"responses":{"410":{"description":"Gone"}}}},
-    "/v1/houses/{world}/{town}": {"get":{"summary":"Houses by world/town","tags":["v1","houses"],"parameters":[{"name":"world","in":"path","required":true,"schema":{"type":"string"}},{"name":"town","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{"description":"House list"},"400":{"description":"Invalid input"}}}}
-  },
-  "components": {
-    "schemas": {
-      "ErrorEnvelope": {
-        "type": "object",
-        "properties": {
-          "information": {"type":"object"},
-          "status": {"type":"integer"}
-        }
-      },
-      "SuccessEnvelope": {
-        "type": "object",
-        "properties": {
-          "information": {"type":"object"},
-          "payload": {"type":"object"}
-        }
-      }
-    }
-  }
-}`
+type openAPIInfo struct {
+	Title       string `json:"title"`
+	Version     string `json:"version"`
+	Description string `json:"description"`
+}
 
-func docsSpec(c *gin.Context) {
-	c.Header("Cache-Control", "public, max-age=300")
-	c.Data(http.StatusOK, "application/json", []byte(openAPISpec))
+type openAPIServer struct {
+	URL         string `json:"url"`
+	Description string `json:"description"`
+}
+
+type openAPITag struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+type openAPIOperation struct {
+	Summary     string                     `json:"summary,omitempty"`
+	Tags        []string                   `json:"tags,omitempty"`
+	Parameters  []openAPIParameter         `json:"parameters,omitempty"`
+	RequestBody *openAPIRequestBody        `json:"requestBody,omitempty"`
+	Responses   map[string]openAPIResponse `json:"responses"`
+}
+
+type openAPIParameter struct {
+	Name     string        `json:"name"`
+	In       string        `json:"in"`
+	Required bool          `json:"required"`
+	Schema   openAPISchema `json:"schema"`
+}
+
+type openAPISchema struct {
+	Type    string `json:"type"`
+	Enum    []any  `json:"enum,omitempty"`
+	Minimum *int   `json:"minimum,omitempty"`
+}
+
+type openAPIResponse struct {
+	Description string `json:"description"`
+}
+
+type openAPIRequestBody struct {
+	Description string                      `json:"description,omitempty"`
+	Required    bool                        `json:"required"`
+	Content     map[string]openAPIMediaType `json:"content"`
+}
+
+type openAPIMediaType struct {
+	Schema map[string]any `json:"schema,omitempty"`
+}
+
+type openAPIOperationOverride struct {
+	Summary     string
+	Tags        []string
+	Parameters  []openAPIParameter
+	RequestBody *openAPIRequestBody
+	Responses   map[string]openAPIResponse
+}
+
+var openAPIOperationOverrides = map[string]openAPIOperationOverride{
+	"GET /": {
+		Summary:   "Service status",
+		Responses: map[string]openAPIResponse{"200": {Description: "OK"}},
+	},
+	"GET /ping": {
+		Summary:   "Pong check",
+		Responses: map[string]openAPIResponse{"200": {Description: "OK"}},
+	},
+	"GET /healthz": {
+		Summary:   "Kubernetes health check",
+		Responses: map[string]openAPIResponse{"200": {Description: "OK"}},
+	},
+	"GET /readyz": {
+		Summary:   "Kubernetes ready check",
+		Responses: map[string]openAPIResponse{"200": {Description: "OK"}},
+	},
+	"GET /versions": {
+		Summary: "Service version metadata",
+	},
+	"GET /metrics": {
+		Summary: "Prometheus metrics",
+	},
+	"GET /openapi.json": {
+		Summary: "OpenAPI spec",
+	},
+	"GET /docs": {
+		Summary: "Interactive docs",
+	},
+	"POST /v1/upstream/raw": {
+		Summary: "Proxy a raw upstream /api payload",
+		Tags:    []string{"upstream"},
+		RequestBody: jsonRequestBody(
+			"Raw upstream endpoint request",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"path"},
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path to proxy, must start with /api/",
+						"pattern":     "^/api/.*",
+					},
+				},
+			},
+		),
+		Responses: standardPostResponses("Raw upstream payload"),
+	},
+	"POST /v1/characters/batch": {
+		Summary: "Batch character lookup",
+		Tags:    []string{"characters"},
+		RequestBody: jsonRequestBody(
+			"Character names to fetch in one request",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"names"},
+				"properties": map[string]any{
+					"names": map[string]any{
+						"type":        "array",
+						"description": "Character names (max 1000)",
+						"maxItems":    1000,
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+		),
+		Responses: standardPostResponses("Batch character results"),
+	},
+	"POST /v1/characters/compare": {
+		Summary: "Compare two characters and return similarity signals",
+		Tags:    []string{"characters"},
+		RequestBody: jsonRequestBody(
+			"Exactly two character names to compare",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"names"},
+				"properties": map[string]any{
+					"names": map[string]any{
+						"type":        "array",
+						"description": "Exactly two character names",
+						"minItems":    2,
+						"maxItems":    2,
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+		),
+		Responses: standardPostResponsesWithNotFound("Character comparison result", "One or both characters were not found"),
+	},
+	"POST /v1/highscores/{category}/cross-world": {
+		Summary: "Fetch cross-world highscores for one category and multiple vocations",
+		Tags:    []string{"highscores"},
+		RequestBody: jsonRequestBody(
+			"Vocation IDs to aggregate across all worlds",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"vocations"},
+				"properties": map[string]any{
+					"vocations": map[string]any{
+						"type":        "array",
+						"description": "Vocation IDs (1-15 entries)",
+						"minItems":    1,
+						"maxItems":    15,
+						"items": map[string]any{
+							"type": "integer",
+						},
+					},
+				},
+			},
+		),
+		Responses: standardPostResponses("Cross-world highscores grouped by world and vocation"),
+	},
+	"POST /v1/highscores/multi-category": {
+		Summary: "Fetch cross-world highscores for multiple categories",
+		Tags:    []string{"highscores"},
+		RequestBody: jsonRequestBody(
+			"Categories and vocation IDs to aggregate across all worlds",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"categories", "vocations"},
+				"properties": map[string]any{
+					"categories": map[string]any{
+						"type":        "array",
+						"description": "Highscore category slugs (max 10)",
+						"maxItems":    10,
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+					"vocations": map[string]any{
+						"type":        "array",
+						"description": "Vocation IDs (1-15 entries)",
+						"minItems":    1,
+						"maxItems":    15,
+						"items": map[string]any{
+							"type": "integer",
+						},
+					},
+				},
+			},
+		),
+		Responses: standardPostResponses("Cross-world highscores grouped by category, world, and vocation"),
+	},
+	"POST /v1/guilds/batch": {
+		Summary: "Batch guild lookup",
+		Tags:    []string{"guilds"},
+		RequestBody: jsonRequestBody(
+			"Guild names to fetch in one request",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"names"},
+				"properties": map[string]any{
+					"names": map[string]any{
+						"type":        "array",
+						"description": "Guild names (max 20)",
+						"maxItems":    20,
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+		),
+		Responses: standardPostResponses("Batch guild results"),
+	},
+	"POST /v1/auctions/filter": {
+		Summary: "Filter auctions by vocation, level range, and world",
+		Tags:    []string{"auctions"},
+		RequestBody: jsonRequestBody(
+			"Auction filter parameters",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"vocation": map[string]any{"type": "integer"},
+					"minLevel": map[string]any{"type": "integer"},
+					"maxLevel": map[string]any{"type": "integer"},
+					"world":    map[string]any{"type": "integer"},
+				},
+			},
+		),
+		Responses: standardPostResponses("Filtered auction payload"),
+	},
+	"POST /v1/killstatistics/batch": {
+		Summary: "Batch killstatistics lookup for multiple worlds",
+		Tags:    []string{"killstatistics"},
+		RequestBody: jsonRequestBody(
+			"World names to fetch killstatistics for",
+			map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{"worlds"},
+				"properties": map[string]any{
+					"worlds": map[string]any{
+						"type":        "array",
+						"description": "World names (max 20)",
+						"maxItems":    20,
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+				},
+			},
+		),
+		Responses: standardPostResponses("Killstatistics results for requested worlds"),
+	},
+	"GET /v1/outfit": {
+		Summary:    "Outfit image proxy",
+		Tags:       []string{"outfit"},
+		Parameters: outfitQueryParams(),
+		Responses:  map[string]openAPIResponse{"200": {Description: "Outfit image"}},
+	},
+	"GET /v1/outfit/{name}": {
+		Summary:    "Outfit image by character name",
+		Tags:       []string{"outfit"},
+		Parameters: outfitByNameQueryParams(),
+		Responses:  map[string]openAPIResponse{"200": {Description: "Outfit image"}},
+	},
+	"GET /v1/houses/towns": {
+		Summary:   "Deprecated houses towns endpoint",
+		Responses: map[string]openAPIResponse{"410": {Description: "Gone"}},
+	},
+	"GET /v1/house/{world}/{house_id}": {
+		Summary:   "Deprecated house endpoint",
+		Responses: map[string]openAPIResponse{"410": {Description: "Gone"}},
+	},
+	"GET /v1/houses/{world}/{town}": {
+		Summary:   "Deprecated houses endpoint",
+		Responses: map[string]openAPIResponse{"410": {Description: "Gone"}},
+	},
+}
+
+func docsSpec(router *gin.Engine) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		spec, err := buildOpenAPISpec(router)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to build openapi spec: %v", err)})
+			return
+		}
+
+		c.Header("Cache-Control", "public, max-age=300")
+		c.Data(http.StatusOK, "application/json", spec)
+	}
+}
+
+func buildOpenAPISpec(router *gin.Engine) ([]byte, error) {
+	routes := append([]gin.RouteInfo(nil), router.Routes()...)
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Path == routes[j].Path {
+			return routes[i].Method < routes[j].Method
+		}
+		return routes[i].Path < routes[j].Path
+	})
+
+	paths := make(map[string]map[string]openAPIOperation, len(routes))
+	for _, route := range routes {
+		openAPIPath := ginPathToOpenAPIPath(route.Path)
+		operation := openAPIOperation{
+			Summary:    defaultOperationSummary(route.Method, openAPIPath),
+			Tags:       defaultOperationTags(openAPIPath),
+			Parameters: pathParametersForGinPath(route.Path),
+			Responses:  map[string]openAPIResponse{"200": {Description: "Success"}},
+		}
+
+		if override, ok := openAPIOperationOverrides[strings.ToUpper(route.Method)+" "+openAPIPath]; ok {
+			if override.Summary != "" {
+				operation.Summary = override.Summary
+			}
+			if len(override.Tags) > 0 {
+				operation.Tags = override.Tags
+			}
+			if override.Parameters != nil {
+				operation.Parameters = override.Parameters
+			}
+			if override.RequestBody != nil {
+				operation.RequestBody = override.RequestBody
+			}
+			if len(override.Responses) > 0 {
+				operation.Responses = override.Responses
+			}
+		}
+
+		if _, ok := paths[openAPIPath]; !ok {
+			paths[openAPIPath] = make(map[string]openAPIOperation)
+		}
+		paths[openAPIPath][strings.ToLower(route.Method)] = operation
+	}
+
+	spec := openAPIDocument{
+		OpenAPI: "3.0.3",
+		Info: openAPIInfo{
+			Title:       "rubinot-data API",
+			Version:     getEnv("APP_VERSION", defaultServiceVersion),
+			Description: "Tibia scraper and data aggregation API.",
+		},
+		Servers: []openAPIServer{{
+			URL:         "/",
+			Description: "Current environment",
+		}},
+		Tags:  buildOpenAPITags(paths),
+		Paths: paths,
+		Components: map[string]map[string]map[string]any{
+			"schemas": {
+				"ErrorEnvelope": {
+					"type": "object",
+					"properties": map[string]any{
+						"information": map[string]any{"type": "object"},
+						"status":      map[string]any{"type": "integer"},
+					},
+				},
+				"SuccessEnvelope": {
+					"type": "object",
+					"properties": map[string]any{
+						"information": map[string]any{"type": "object"},
+						"payload":     map[string]any{"type": "object"},
+					},
+				},
+			},
+		},
+	}
+
+	return json.Marshal(spec)
+}
+
+func ginPathToOpenAPIPath(ginPath string) string {
+	if ginPath == "/" {
+		return ginPath
+	}
+
+	parts := strings.Split(strings.Trim(ginPath, "/"), "/")
+	for i, part := range parts {
+		if strings.HasPrefix(part, ":") {
+			parts[i] = "{" + strings.TrimPrefix(part, ":") + "}"
+			continue
+		}
+		if strings.HasPrefix(part, "*") {
+			parts[i] = "{" + strings.TrimPrefix(part, "*") + "}"
+		}
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+func pathParametersForGinPath(ginPath string) []openAPIParameter {
+	if ginPath == "/" {
+		return nil
+	}
+
+	parts := strings.Split(strings.Trim(ginPath, "/"), "/")
+	params := make([]openAPIParameter, 0, len(parts))
+	for _, part := range parts {
+		if strings.HasPrefix(part, ":") {
+			params = append(params, pathParam(strings.TrimPrefix(part, ":")))
+			continue
+		}
+		if strings.HasPrefix(part, "*") {
+			params = append(params, pathParam(strings.TrimPrefix(part, "*")))
+		}
+	}
+	if len(params) == 0 {
+		return nil
+	}
+	return params
+}
+
+func defaultOperationSummary(method, openAPIPath string) string {
+	return strings.ToUpper(method) + " " + openAPIPath
+}
+
+func defaultOperationTags(openAPIPath string) []string {
+	if !strings.HasPrefix(openAPIPath, "/v1/") {
+		return []string{"system"}
+	}
+
+	parts := strings.Split(strings.Trim(openAPIPath, "/"), "/")
+	if len(parts) < 2 {
+		return []string{"api"}
+	}
+
+	resource := parts[1]
+	resource = strings.Trim(resource, "{}")
+	if resource == "" {
+		return []string{"api"}
+	}
+	return []string{resource}
+}
+
+func buildOpenAPITags(paths map[string]map[string]openAPIOperation) []openAPITag {
+	unique := make(map[string]struct{})
+	for _, methods := range paths {
+		for _, operation := range methods {
+			for _, tag := range operation.Tags {
+				tag = strings.TrimSpace(tag)
+				if tag == "" {
+					continue
+				}
+				unique[tag] = struct{}{}
+			}
+		}
+	}
+
+	names := make([]string, 0, len(unique))
+	for tag := range unique {
+		names = append(names, tag)
+	}
+	sort.Strings(names)
+
+	tags := make([]openAPITag, 0, len(names))
+	for _, name := range names {
+		tags = append(tags, openAPITag{
+			Name:        name,
+			Description: tagDescription(name),
+		})
+	}
+	return tags
+}
+
+func tagDescription(name string) string {
+	switch name {
+	case "api":
+		return "Generic API endpoints."
+	case "auctions":
+		return "Character bazaar auctions and filters."
+	case "banishments":
+		return "Banishments and punishments endpoints."
+	case "bans":
+		return "Account bans endpoint."
+	case "boosted":
+		return "Boosted boss and creature data."
+	case "character", "characters":
+		return "Character lookup, batch fetch, and comparison endpoints."
+	case "deaths":
+		return "Character deaths endpoints."
+	case "events":
+		return "Server event schedule and calendar endpoints."
+	case "geo-language":
+		return "Geo language detection endpoint."
+	case "guild", "guilds":
+		return "Guild lookup and batch endpoints."
+	case "healthz", "readyz":
+		return "Health and readiness checks."
+	case "highscores":
+		return "Highscores endpoints and cross-world aggregation."
+	case "house", "houses":
+		return "House endpoints (deprecated in this API)."
+	case "killstatistics":
+		return "Killstatistics endpoints and batch aggregation."
+	case "maintenance":
+		return "Maintenance mode status endpoint."
+	case "metrics":
+		return "Prometheus metrics endpoint."
+	case "news":
+		return "News, archives, and ticker endpoints."
+	case "outfit":
+		return "Outfit image and GIF rendering endpoints."
+	case "ping":
+		return "Simple liveness check endpoint."
+	case "system":
+		return "Service-level system endpoints."
+	case "transfers":
+		return "World transfer endpoints."
+	case "upstream":
+		return "Raw upstream proxy endpoints."
+	case "versions":
+		return "Service version metadata endpoint."
+	case "world", "worlds":
+		return "World and world-level aggregate endpoints."
+	default:
+		return ""
+	}
+}
+
+func jsonRequestBody(description string, schema map[string]any) *openAPIRequestBody {
+	return &openAPIRequestBody{
+		Description: description,
+		Required:    true,
+		Content: map[string]openAPIMediaType{
+			"application/json": {
+				Schema: schema,
+			},
+		},
+	}
+}
+
+func standardPostResponses(successDescription string) map[string]openAPIResponse {
+	return responseSet(map[string]string{
+		"200": successDescription,
+		"400": "Validation error.",
+		"502": "Upstream fetch or processing error.",
+		"503": "Upstream maintenance mode.",
+		"504": "Upstream timeout.",
+	})
+}
+
+func standardPostResponsesWithNotFound(successDescription string, notFoundDescription string) map[string]openAPIResponse {
+	responses := standardPostResponses(successDescription)
+	responses["404"] = openAPIResponse{Description: notFoundDescription}
+	return responses
+}
+
+func responseSet(values map[string]string) map[string]openAPIResponse {
+	responses := make(map[string]openAPIResponse, len(values))
+	for code, description := range values {
+		responses[code] = openAPIResponse{Description: description}
+	}
+	return responses
+}
+
+func outfitQueryParams() []openAPIParameter {
+	return []openAPIParameter{
+		intQueryParam("type", nil),
+		intQueryParam("head", nil),
+		intQueryParam("body", nil),
+		intQueryParam("legs", nil),
+		intQueryParam("feet", nil),
+		intQueryParam("addons", nil),
+		intQueryParam("direction", []any{0, 1, 2, 3}),
+		intQueryParam("animated", []any{0, 1}),
+		intQueryParam("walk", []any{0, 1}),
+		intQueryParam("size", nil),
+		stringQueryParam("format", []any{"png", "gif"}),
+	}
+}
+
+func outfitByNameQueryParams() []openAPIParameter {
+	return []openAPIParameter{
+		pathParam("name"),
+		intQueryParam("direction", []any{0, 1, 2, 3}),
+		intQueryParam("animated", []any{0, 1}),
+		intQueryParam("walk", []any{0, 1}),
+		intQueryParam("size", nil),
+		stringQueryParam("format", []any{"png", "gif"}),
+	}
+}
+
+func pathParam(name string) openAPIParameter {
+	return openAPIParameter{
+		Name:     name,
+		In:       "path",
+		Required: true,
+		Schema:   openAPISchema{Type: "string"},
+	}
+}
+
+func intQueryParam(name string, enumValues []any) openAPIParameter {
+	return openAPIParameter{
+		Name:     name,
+		In:       "query",
+		Required: false,
+		Schema: openAPISchema{
+			Type: "integer",
+			Enum: enumValues,
+		},
+	}
+}
+
+func stringQueryParam(name string, enumValues []any) openAPIParameter {
+	return openAPIParameter{
+		Name:     name,
+		In:       "query",
+		Required: false,
+		Schema: openAPISchema{
+			Type: "string",
+			Enum: enumValues,
+		},
+	}
 }
 
 func docsPage(c *gin.Context) {
