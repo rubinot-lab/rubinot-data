@@ -188,19 +188,7 @@ jobs:
               echo "[attempt ${attempt}] Argo API HTTP ${code}; response:"
               sed -n '1,20p' "$tmp" || true
             else
-              python3 - "$tmp" "$TARGET_REVISION" "$attempt" <<'PY'
-              import json,sys
-              path,target,attempt=sys.argv[1],sys.argv[2],sys.argv[3]
-              obj=json.load(open(path))
-              st=obj.get('status',{})
-              rev=st.get('sync',{}).get('revision','')
-              sync=st.get('sync',{}).get('status','')
-              health=st.get('health',{}).get('status','')
-              print(f"[attempt {attempt}] revision={rev} sync={sync} health={health} target={target}")
-              if rev==target and sync=='Synced' and health=='Healthy':
-                  sys.exit(0)
-              sys.exit(2)
-              PY
+              python3 -c 'import json,sys; path,target,attempt=sys.argv[1:4]; obj=json.load(open(path)); st=obj.get("status",{}); rev=st.get("sync",{}).get("revision",""); sync=st.get("sync",{}).get("status",""); health=st.get("health",{}).get("status",""); print(f"[attempt {attempt}] revision={rev} sync={sync} health={health} target={target}"); sys.exit(0 if (rev==target and sync=="Synced" and health=="Healthy") else 2)' "$tmp" "$TARGET_REVISION" "$attempt"
               rc=$?
               if [ "$rc" -eq 0 ]; then
                 echo "Deployment verified in ArgoCD for app ${APP_NAME} at revision ${TARGET_REVISION}"
