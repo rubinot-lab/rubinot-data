@@ -134,7 +134,7 @@ jobs:
 
           if git diff --quiet -- "${GITOPS_PATH}" "${GITOPS_CONFIGMAP_PATH}"; then
             echo "No manifest changes; nothing to deploy."
-            echo "gitops_commit_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+            echo "gitops_commit_sha=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
