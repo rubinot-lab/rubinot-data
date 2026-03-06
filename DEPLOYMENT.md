@@ -54,3 +54,23 @@ git push origin vX.Y.Z
 
 ## ArgoCD Image Updater note
 Current delivery is GitOps write-back from CI (explicit and auditable). Image Updater can be layered later, but needs GHCR credentials and per-app annotations.
+
+## Argo rollout verification in CI (new)
+The release workflow now waits for ArgoCD to confirm deployment success after the GitOps commit.
+
+Success criteria checked by workflow:
+- `status.sync.revision == <gitops commit sha pushed by the workflow>`
+- `status.sync.status == Synced`
+- `status.health.status == Healthy`
+
+Timeout: 15 minutes. If criteria are not met, workflow fails.
+
+### Required secrets for verification
+- `ARGOCD_SERVER` (e.g., `https://argocd.cddlabs.casa`)
+- `ARGOCD_AUTH_TOKEN` (read-only Argo API token)
+
+Optional (only if Cloudflare Access protects Argo endpoint):
+- `CF_ACCESS_CLIENT_ID`
+- `CF_ACCESS_CLIENT_SECRET`
+
+This makes GitHub Actions reflect real deployment success, not only image push + GitOps commit.
