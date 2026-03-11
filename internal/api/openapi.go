@@ -318,6 +318,156 @@ var openAPIOperationOverrides = map[string]openAPIOperationOverride{
 		Summary:   "Deprecated houses endpoint",
 		Responses: map[string]openAPIResponse{"410": {Description: "Gone"}},
 	},
+
+	"GET /v2/worlds": {
+		Summary: "List all worlds with status and player counts",
+		Tags:    []string{"v2/worlds"},
+	},
+	"GET /v2/world/{name}": {
+		Summary: "World detail with online players (use 'all' for every world)",
+		Tags:    []string{"v2/worlds"},
+	},
+	"GET /v2/world/{name}/details": {
+		Summary: "World + full character info for each online player",
+		Tags:    []string{"v2/worlds"},
+	},
+	"GET /v2/world/{name}/dashboard": {
+		Summary: "World overview: players, recent deaths, killstatistics",
+		Tags:    []string{"v2/worlds"},
+	},
+	"GET /v2/highscores/{world}/{category}/{vocation}": {
+		Summary: "Highscores for a world/category/vocation combo",
+		Tags:    []string{"v2/highscores"},
+	},
+	"GET /v2/killstatistics/{world}": {
+		Summary: "Kill statistics for a world (use 'all' for every world)",
+		Tags:    []string{"v2/killstatistics"},
+	},
+	"GET /v2/deaths/{world}": {
+		Summary: "Recent deaths for a world (single page)",
+		Tags:    []string{"v2/deaths"},
+		Parameters: []openAPIParameter{
+			intQueryParam("page", nil),
+			intQueryParam("level", nil),
+			stringQueryParam("pvp", []any{"true", "false"}),
+			stringQueryParam("guild", nil),
+		},
+	},
+	"GET /v2/deaths/{world}/all": {
+		Summary: "All deaths across all pages for a world",
+		Tags:    []string{"v2/deaths"},
+		Parameters: []openAPIParameter{
+			intQueryParam("level", nil),
+			stringQueryParam("pvp", []any{"true", "false"}),
+			stringQueryParam("guild", nil),
+		},
+	},
+	"GET /v2/banishments/{world}": {
+		Summary: "Banishments for a world (single page)",
+		Tags:    []string{"v2/banishments"},
+		Parameters: []openAPIParameter{
+			intQueryParam("page", nil),
+		},
+	},
+	"GET /v2/banishments/{world}/all": {
+		Summary: "All banishments across all pages for a world",
+		Tags:    []string{"v2/banishments"},
+	},
+	"GET /v2/transfers": {
+		Summary: "World transfers (single page)",
+		Tags:    []string{"v2/transfers"},
+		Parameters: []openAPIParameter{
+			stringQueryParam("world", nil),
+			intQueryParam("level", nil),
+			intQueryParam("page", nil),
+		},
+	},
+	"GET /v2/transfers/all": {
+		Summary: "All transfers across all pages",
+		Tags:    []string{"v2/transfers"},
+		Parameters: []openAPIParameter{
+			stringQueryParam("world", nil),
+			intQueryParam("level", nil),
+		},
+	},
+	"GET /v2/character/{name}": {
+		Summary: "Character lookup by name",
+		Tags:    []string{"v2/characters"},
+	},
+	"GET /v2/guild/{name}": {
+		Summary: "Guild detail by name",
+		Tags:    []string{"v2/guilds"},
+	},
+	"GET /v2/guilds/{world}": {
+		Summary: "Guild list for a world (single page, use 'all' for every world)",
+		Tags:    []string{"v2/guilds"},
+		Parameters: []openAPIParameter{
+			intQueryParam("page", nil),
+		},
+	},
+	"GET /v2/guilds/{world}/all": {
+		Summary: "All guilds across all pages for a world",
+		Tags:    []string{"v2/guilds"},
+	},
+	"GET /v2/boosted": {
+		Summary: "Today's boosted boss and creature",
+		Tags:    []string{"v2/boosted"},
+	},
+	"GET /v2/maintenance": {
+		Summary: "Server maintenance status",
+		Tags:    []string{"v2/maintenance"},
+	},
+	"GET /v2/auctions/current/{page}": {
+		Summary: "Current auctions (single page)",
+		Tags:    []string{"v2/auctions"},
+	},
+	"GET /v2/auctions/current/all": {
+		Summary: "All current auctions across all pages",
+		Tags:    []string{"v2/auctions"},
+	},
+	"GET /v2/auctions/history/{page}": {
+		Summary: "Auction history (single page)",
+		Tags:    []string{"v2/auctions"},
+	},
+	"GET /v2/auctions/history/all": {
+		Summary: "All auction history across all pages",
+		Tags:    []string{"v2/auctions"},
+	},
+	"GET /v2/auctions/{id}": {
+		Summary: "Auction detail by ID",
+		Tags:    []string{"v2/auctions"},
+	},
+	"GET /v2/news/id/{news_id}": {
+		Summary: "News article or ticker by ID",
+		Tags:    []string{"v2/news"},
+	},
+	"GET /v2/news/archive": {
+		Summary: "News archive (default last 90 days)",
+		Tags:    []string{"v2/news"},
+		Parameters: []openAPIParameter{
+			intQueryParam("days", nil),
+		},
+	},
+	"GET /v2/news/latest": {
+		Summary: "Latest news articles",
+		Tags:    []string{"v2/news"},
+	},
+	"GET /v2/news/newsticker": {
+		Summary: "News ticker entries",
+		Tags:    []string{"v2/news"},
+	},
+	"GET /v2/outfit": {
+		Summary:    "Outfit image proxy",
+		Tags:       []string{"v2/outfit"},
+		Parameters: outfitQueryParams(),
+		Responses:  map[string]openAPIResponse{"200": {Description: "Outfit image"}},
+	},
+	"GET /v2/outfit/{name}": {
+		Summary:    "Outfit image by character name",
+		Tags:       []string{"v2/outfit"},
+		Parameters: outfitByNameQueryParams(),
+		Responses:  map[string]openAPIResponse{"200": {Description: "Outfit image"}},
+	},
 }
 
 func docsSpec(router *gin.Engine) gin.HandlerFunc {
@@ -457,7 +607,7 @@ func defaultOperationSummary(method, openAPIPath string) string {
 }
 
 func defaultOperationTags(openAPIPath string) []string {
-	if !strings.HasPrefix(openAPIPath, "/v1/") {
+	if !strings.HasPrefix(openAPIPath, "/v1/") && !strings.HasPrefix(openAPIPath, "/v2/") {
 		return []string{"system"}
 	}
 
@@ -466,10 +616,13 @@ func defaultOperationTags(openAPIPath string) []string {
 		return []string{"api"}
 	}
 
-	resource := parts[1]
-	resource = strings.Trim(resource, "{}")
+	version := parts[0]
+	resource := strings.Trim(parts[1], "{}")
 	if resource == "" {
 		return []string{"api"}
+	}
+	if version == "v2" {
+		return []string{version + "/" + resource}
 	}
 	return []string{resource}
 }
@@ -554,6 +707,32 @@ func tagDescription(name string) string {
 		return "Service version metadata endpoint."
 	case "world", "worlds":
 		return "World and world-level aggregate endpoints."
+	case "v2/worlds":
+		return "v2 world endpoints — CDP-optimized with connection pooling, singleflight dedup, and 5s TTL cache. Use 'all' as world name for fan-out."
+	case "v2/characters":
+		return "v2 character lookup — CDP-optimized."
+	case "v2/guilds":
+		return "v2 guild endpoints — supports paginated fan-out via /all."
+	case "v2/highscores":
+		return "v2 highscores — single fetch per world/category/vocation."
+	case "v2/killstatistics":
+		return "v2 kill statistics — batch fan-out for 'all' worlds."
+	case "v2/deaths":
+		return "v2 deaths — supports paginated fan-out via /all."
+	case "v2/banishments":
+		return "v2 banishments — supports paginated fan-out via /all."
+	case "v2/transfers":
+		return "v2 transfers — supports paginated fan-out via /all."
+	case "v2/boosted":
+		return "v2 boosted boss and creature."
+	case "v2/maintenance":
+		return "v2 server maintenance status."
+	case "v2/auctions":
+		return "v2 character bazaar — supports paginated fan-out via /all."
+	case "v2/news":
+		return "v2 news, archive, and ticker endpoints."
+	case "v2/outfit":
+		return "v2 outfit image rendering."
 	default:
 		return ""
 	}
@@ -657,36 +836,24 @@ func stringQueryParam(name string, enumValues []any) openAPIParameter {
 
 func docsPage(c *gin.Context) {
 	page := `<!doctype html>
-<html lang="en">
+<html>
   <head>
+    <title>rubinot-data API</title>
     <meta charset="utf-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1"/>
-    <title>rubinot-data API docs</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui.css"/>
-    <style>
-      html, body { height: 100%; margin: 0; }
-      body { display: flex; flex-direction: column; }
-      #toolbar { padding: 10px 16px; background: #111; color: #fff; display:flex; justify-content: space-between; align-items: center; }
-      #swagger-ui { flex: 1; }
-      a { color: #8dcaff; }
-    </style>
   </head>
   <body>
-    <div id="toolbar">
-      <strong>rubinot-data API</strong>
-      <div><a href="/openapi.json">openapi.json</a> · <a href="/v1/worlds">v1/worlds</a></div>
-    </div>
-    <div id="swagger-ui"></div>
-    <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
+    <div id="app"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
     <script>
-      window.onload = function() {
-        window.ui = SwaggerUIBundle({
-          url: '/openapi.json',
-          dom_id: '#swagger-ui',
-          presets: [SwaggerUIBundle.presets.apis, SwaggerUIBundle.SwaggerUIStandalonePreset],
-          layout: 'BaseLayout'
-        })
-      }
+      Scalar.createApiReference('#app', {
+        url: '/openapi.json',
+        theme: 'deepSpace',
+        layout: 'modern',
+        darkMode: true,
+        showSidebar: true,
+        hideDownloadButton: false,
+      })
     </script>
   </body>
 </html>`

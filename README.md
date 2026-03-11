@@ -2,6 +2,8 @@
 
 Go API that scrapes `rubinot.com.br` through FlareSolverr and exposes normalized JSON contracts for Rubinot game data.
 
+Live at **https://data.rubinot.dev** — interactive docs at [/docs](https://data.rubinot.dev/docs).
+
 ## Status
 
 - Parity target: `rubinot-live` endpoint contracts E1-E18
@@ -62,7 +64,45 @@ All `/v1/*` responses use:
 
 On errors, `information.status` includes `error` and `message` and no payload key.
 
-## Endpoints (E1-E18)
+## v2 Endpoints (CDP-optimized)
+
+v2 uses a CDP connection pool (4 tabs/pod), singleflight request deduplication, and a 5-second TTL in-memory cache. Endpoints that accept a world name also accept `all` for fan-out across every world. Paginated endpoints have `/all` variants that fetch every page via parallel `Promise.allSettled()`.
+
+| Endpoint | Payload key | Notes |
+|---|---|---|
+| `GET /v2/worlds` | `worlds` | All worlds with status and player counts |
+| `GET /v2/world/:name` | `world` | World detail with online players; `:name=all` for batch |
+| `GET /v2/world/:name/details` | `world` | World + full character info for each online player |
+| `GET /v2/world/:name/dashboard` | `dashboard` | World overview: players, recent deaths, killstatistics |
+| `GET /v2/highscores/:world/:category/:vocation` | `highscores` | Highscores for a world/category/vocation combo |
+| `GET /v2/killstatistics/:world` | `killstatistics` | Kill stats; `:world=all` for batch |
+| `GET /v2/deaths/:world` | `deaths` | Recent deaths; query `page`, `level`, `pvp`, `guild` |
+| `GET /v2/deaths/:world/all` | `deaths` | All death pages merged; query `level`, `pvp`, `guild` |
+| `GET /v2/banishments/:world` | `banishments` | Banishments; query `page` |
+| `GET /v2/banishments/:world/all` | `banishments` | All banishment pages merged |
+| `GET /v2/transfers` | `transfers` | Transfers; query `world`, `level`, `page` |
+| `GET /v2/transfers/all` | `transfers` | All transfer pages merged; query `world`, `level` |
+| `GET /v2/character/:name` | `character` | Character lookup |
+| `GET /v2/guild/:name` | `guild` | Guild detail |
+| `GET /v2/guilds/:world` | `guilds` | Guild list; query `page`; `:world=all` for batch |
+| `GET /v2/guilds/:world/all` | `guilds` | All guild pages merged |
+| `GET /v2/boosted` | `boosted` | Today's boosted boss and creature |
+| `GET /v2/maintenance` | `maintenance` | Server maintenance status |
+| `GET /v2/auctions/current/:page` | `auctions` | Current auctions (single page) |
+| `GET /v2/auctions/current/all` | `auctions` | All current auctions merged |
+| `GET /v2/auctions/history/:page` | `auctions` | Auction history (single page) |
+| `GET /v2/auctions/history/all` | `auctions` | All auction history merged |
+| `GET /v2/auctions/:id` | `auction` | Auction detail by ID |
+| `GET /v2/news/id/:news_id` | `news` | News article or ticker by ID |
+| `GET /v2/news/archive` | `newslist` | Archive; query `days` (default 90) |
+| `GET /v2/news/latest` | `newslist` | Latest articles |
+| `GET /v2/news/newsticker` | `newslist` | Ticker entries |
+| `GET /v2/outfit` | image | Outfit image proxy (same params as v1) |
+| `GET /v2/outfit/:name` | image | Outfit by character name |
+
+## v1 Endpoints (legacy)
+
+v1 uses the original single-CDP-connection path through FlareSolverr. These routes remain frozen and untouched.
 
 | Endpoint | Payload key | Notes |
 |---|---|---|
@@ -71,11 +111,7 @@ On errors, `information.status` includes `error` and `message` and no payload ke
 | `GET /v1/character/:name` | `character` | Character name validation |
 | `GET /v1/guild/:name` | `guild` | Guild name validation |
 | `GET /v1/guilds/:world` | `guilds` | World name -> world id mapping |
-| `GET /v1/houses/:world/:town` | `houses` | World + town canonical mapping |
-| `GET /v1/house/:world/:house_id` | `house` | `house_id` must be int >= 1 |
-| `GET /v1/highscores/:world/:category/:vocation/:page` | `highscores` | Redirects from shorter highscores routes |
-| `GET /v1/highscores/:world` | redirect | `302 -> /v1/highscores/:world/experience/all/1` |
-| `GET /v1/highscores/:world/:category` | redirect | `302 -> /v1/highscores/:world/:category/all/1` |
+| `GET /v1/highscores/:world/:category/:vocation/:page` | `highscores` | Redirects from shorter routes |
 | `GET /v1/killstatistics/:world` | `killstatistics` | World validation |
 | `GET /v1/news/id/:news_id` | `news` | `news_id` must be int > 0 |
 | `GET /v1/news/archive` | `newslist` | Optional query `days` (default `90`) |
