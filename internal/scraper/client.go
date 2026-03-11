@@ -25,7 +25,7 @@ const (
 	defaultMaxConcurrency   = 8
 	defaultRequestTimeout   = 140 * time.Second
 	defaultBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36"
-	cdpBatchSize            = 6
+	cdpBatchSize            = 20
 	cdpPageFetchMaxRetries  = 3
 )
 
@@ -44,11 +44,13 @@ type Client struct {
 }
 
 type flareSolverrRequest struct {
-	Cmd        string            `json:"cmd"`
-	URL        string            `json:"url,omitempty"`
-	Session    string            `json:"session,omitempty"`
-	MaxTimeout int               `json:"maxTimeout,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
+	Cmd                string            `json:"cmd"`
+	URL                string            `json:"url,omitempty"`
+	Session            string            `json:"session,omitempty"`
+	MaxTimeout         int               `json:"maxTimeout,omitempty"`
+	Headers            map[string]string `json:"headers,omitempty"`
+	DisableMedia       bool              `json:"disableMedia,omitempty"`
+	SessionTTLMinutes  int               `json:"session_ttl_minutes,omitempty"`
 }
 
 type flareSolverrCookie struct {
@@ -257,10 +259,12 @@ func (c *Client) initFlareSolverrSession(ctx context.Context) error {
 			SetContext(ctx).
 			SetHeader("Content-Type", "application/json").
 			SetBody(flareSolverrRequest{
-				Cmd:        "request.get",
-				URL:        strings.TrimRight(os.Getenv("RUBINOT_BASE_URL"), "/") + "/",
-				MaxTimeout: c.maxTimeoutMs,
-				Session:    cdpSessionName,
+				Cmd:               "request.get",
+				URL:               strings.TrimRight(os.Getenv("RUBINOT_BASE_URL"), "/") + "/",
+				MaxTimeout:        c.maxTimeoutMs,
+				Session:           cdpSessionName,
+				DisableMedia:      true,
+				SessionTTLMinutes: 30,
 			}).
 			SetResult(&fsResp).
 			Post(c.flareSolverrURL)
