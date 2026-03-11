@@ -83,14 +83,14 @@ func (p *CDPPool) Acquire(ctx context.Context) (*CDPClient, int, error) {
 		tab := p.tabs[idx]
 		p.mu.Unlock()
 
+		CDPPoolAvailable.Set(float64(len(p.available)))
 		if tab == nil || !tab.IsConnected() {
+			CDPPoolRebuilds.Inc()
 			rebuilt, err := p.rebuildTab(ctx, idx)
 			if err != nil {
 				p.available <- idx
-				CDPPoolRebuilds.Inc()
 				return nil, 0, fmt.Errorf("rebuild tab %d: %w", idx, err)
 			}
-			CDPPoolRebuilds.Inc()
 			return rebuilt, idx, nil
 		}
 		return tab, idx, nil
@@ -101,6 +101,7 @@ func (p *CDPPool) Acquire(ctx context.Context) (*CDPClient, int, error) {
 
 func (p *CDPPool) Release(idx int) {
 	p.available <- idx
+	CDPPoolAvailable.Set(float64(len(p.available)))
 }
 
 func (p *CDPPool) rebuildTab(ctx context.Context, idx int) (*CDPClient, error) {
