@@ -300,6 +300,150 @@ func (c *CDPClient) BatchFetch(ctx context.Context, apiPaths []string) ([]BatchR
 	return out, nil
 }
 
+func (c *CDPClient) ConnectToURL(ctx context.Context, wsURL string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn != nil {
+		c.conn.Close()
+		c.conn = nil
+	}
+
+	parsed, err := url.Parse(wsURL)
+	if err != nil {
+		return fmt.Errorf("parse CDP WebSocket URL: %w", err)
+	}
+	baseHost := strings.TrimPrefix(c.baseURL, "ws://")
+	baseHost = strings.TrimPrefix(baseHost, "http://")
+	parsed.Host = baseHost
+	wsURL = parsed.String()
+
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 10 * time.Second,
+	}
+	conn, _, err := dialer.DialContext(ctx, wsURL, nil)
+	if err != nil {
+		return fmt.Errorf("dial CDP WebSocket %s: %w", wsURL, err)
+	}
+	conn.SetReadLimit(10 * 1024 * 1024)
+
+	c.conn = conn
+	return nil
+}
+
+func (c *CDPClient) CreateTarget(ctx context.Context, targetURL string) (string, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return "", fmt.Errorf("CDP not connected")
+	}
+
+	id := c.nextID.Add(1)
+	msg := cdpRequest{
+		ID:     id,
+		Method: "Target.createTarget",
+		Params: map[string]any{
+			"url": targetURL,
+		},
+	}
+
+	if err := c.conn.WriteJSON(msg); err != nil {
+		c.conn.Close()
+		c.conn = nil
+		return "", fmt.Errorf("write CDP createTarget: %w", err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	c.conn.SetReadDeadline(deadline)
+
+	for {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
+			c.conn.Close()
+			c.conn = nil
+			return "", fmt.Errorf("read CDP createTarget response: %w", err)
+		}
+
+		var resp cdpResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			continue
+		}
+		if resp.ID != id {
+			continue
+		}
+		if resp.Error != nil {
+			return "", fmt.Errorf("CDP createTarget error %d: %s", resp.Error.Code, resp.Error.Message)
+		}
+
+		var result struct {
+			TargetID string `json:"targetId"`
+		}
+		if err := json.Unmarshal(resp.Result, &result); err != nil {
+			return "", fmt.Errorf("decode createTarget result: %w", err)
+		}
+		return result.TargetID, nil
+	}
+}
+
+func (c *CDPClient) Navigate(ctx context.Context, pageURL string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.conn == nil {
+		return fmt.Errorf("CDP not connected")
+	}
+
+	id := c.nextID.Add(1)
+	msg := cdpRequest{
+		ID:     id,
+		Method: "Page.navigate",
+		Params: map[string]any{
+			"url": pageURL,
+		},
+	}
+
+	if err := c.conn.WriteJSON(msg); err != nil {
+		c.conn.Close()
+		c.conn = nil
+		return fmt.Errorf("write CDP navigate: %w", err)
+	}
+
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		deadline = time.Now().Add(30 * time.Second)
+	}
+	c.conn.SetReadDeadline(deadline)
+
+	for {
+		_, data, err := c.conn.ReadMessage()
+		if err != nil {
+			c.conn.Close()
+			c.conn = nil
+			return fmt.Errorf("read CDP navigate response: %w", err)
+		}
+
+		var resp cdpResponse
+		if err := json.Unmarshal(data, &resp); err != nil {
+			continue
+		}
+		if resp.ID != id {
+			continue
+		}
+		if resp.Error != nil {
+			return fmt.Errorf("CDP navigate error %d: %s", resp.Error.Code, resp.Error.Message)
+		}
+		return nil
+	}
+}
+
+func (c *CDPClient) DiscoverPageTarget(ctx context.Context) (string, error) {
+	return c.discoverPageTarget(ctx)
+}
+
 func (c *CDPClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
