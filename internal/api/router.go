@@ -218,7 +218,30 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/news/all", handleEndpoint(getNewsAll))
 	}
 
+	oc, ocErr := initOptimizedClient(context.Background())
+	if ocErr != nil {
+		log.Printf("v2 optimized client init failed (v2 routes disabled): %v", ocErr)
+	}
+	if oc != nil {
+		registerV2Routes(router, oc)
+	}
+
 	return router, nil
+}
+
+func initOptimizedClient(ctx context.Context) (*scraper.OptimizedClient, error) {
+	cdpURL := getEnv("CDP_URL", "")
+	if cdpURL == "" {
+		return nil, fmt.Errorf("CDP_URL not set")
+	}
+	poolSize := getEnvInt("CDP_POOL_SIZE", 4)
+	pool := scraper.NewCDPPool(cdpURL, resolvedBaseURL, poolSize)
+	if err := pool.Init(ctx); err != nil {
+		return nil, fmt.Errorf("cdp pool init: %w", err)
+	}
+	cacheTTLSeconds := getEnvInt("CDP_CACHE_TTL_SECONDS", 5)
+	fetcher := scraper.NewCachedFetcher(pool, time.Duration(cacheTTLSeconds)*time.Second)
+	return scraper.NewOptimizedClient(fetcher), nil
 }
 
 func getWorlds(c *gin.Context) (endpointResult, error) {
