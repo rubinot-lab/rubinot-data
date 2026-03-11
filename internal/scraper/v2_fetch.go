@@ -784,6 +784,8 @@ func v2FetchAllAuctions(ctx context.Context, oc *OptimizedClient, baseURL, aucti
 	})
 }
 
+const maxPaginatedPages = 50
+
 func v2FetchAllPaginated[T any](
 	ctx context.Context,
 	oc *OptimizedClient,
@@ -805,6 +807,9 @@ func v2FetchAllPaginated[T any](
 	}
 	if totalPages <= 0 {
 		totalPages = 1
+	}
+	if totalPages > maxPaginatedPages {
+		totalPages = maxPaginatedPages
 	}
 
 	if totalPages == 1 {

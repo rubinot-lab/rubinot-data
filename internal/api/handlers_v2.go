@@ -211,6 +211,30 @@ func v2GetKillstatistics(c *gin.Context, validator *validation.Validator, oc *sc
 
 func v2GetDeaths(c *gin.Context, validator *validation.Validator, oc *scraper.OptimizedClient) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
+
+	if isAllWorldsToken(worldInput) {
+		filters, err := parseDeathsFilters(c)
+		if err != nil {
+			return endpointResult{}, err
+		}
+		worlds := validator.AllWorlds()
+		results := make([]domain.DeathsResult, 0, len(worlds))
+		allSources := make([]string, 0)
+		for _, world := range worlds {
+			deaths, sourceURL, fetchErr := scraper.V2FetchDeaths(c.Request.Context(), oc, resolvedBaseURL, world.Name, world.ID, filters)
+			if fetchErr != nil {
+				return endpointResult{Sources: append(allSources, sourceURL)}, fetchErr
+			}
+			results = append(results, deaths)
+			allSources = append(allSources, sourceURL)
+		}
+		return endpointResult{
+			PayloadKey: "deaths",
+			Payload:    results,
+			Sources:    allSources,
+		}, nil
+	}
+
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
@@ -293,6 +317,26 @@ func v2GetAllDeaths(c *gin.Context, validator *validation.Validator, oc *scraper
 
 func v2GetBanishments(c *gin.Context, validator *validation.Validator, oc *scraper.OptimizedClient) (endpointResult, error) {
 	worldInput := strings.TrimSpace(c.Param("world"))
+
+	if isAllWorldsToken(worldInput) {
+		worlds := validator.AllWorlds()
+		results := make([]domain.BanishmentsResult, 0, len(worlds))
+		allSources := make([]string, 0)
+		for _, world := range worlds {
+			banishments, sourceURL, err := scraper.V2FetchBanishments(c.Request.Context(), oc, resolvedBaseURL, world.Name, world.ID, 1)
+			if err != nil {
+				return endpointResult{Sources: append(allSources, sourceURL)}, err
+			}
+			results = append(results, banishments)
+			allSources = append(allSources, sourceURL)
+		}
+		return endpointResult{
+			PayloadKey: "banishments",
+			Payload:    results,
+			Sources:    allSources,
+		}, nil
+	}
+
 	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)

@@ -3,12 +3,15 @@ package scraper
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sync/singleflight"
 )
+
+const maxFetchRetries = 3
 
 type cacheEntry struct {
 	value     string
@@ -43,39 +46,61 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 	CacheRequests.WithLabelValues("miss").Inc()
 
 	result, err, shared := f.group.Do(cacheKey, func() (interface{}, error) {
-		tab, idx, acquireErr := f.pool.Acquire(ctx)
-		if acquireErr != nil {
-			return nil, acquireErr
-		}
-		defer f.pool.Release(idx)
-
-		started := time.Now()
-		body, fetchErr := tab.Fetch(ctx, cacheKey)
-		CDPFetchDuration.Observe(time.Since(started).Seconds())
-
-		if fetchErr != nil {
-			CDPFetchRequests.WithLabelValues("error").Inc()
-			return nil, fetchErr
-		}
-
-		trimmed := strings.TrimSpace(body)
-		if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
-			CDPFetchRequests.WithLabelValues("non_json").Inc()
-			preview := trimmed
-			if len(preview) > 200 {
-				preview = preview[:200]
+		var lastErr error
+		for attempt := 0; attempt < maxFetchRetries; attempt++ {
+			tab, idx, acquireErr := f.pool.Acquire(ctx)
+			if acquireErr != nil {
+				return nil, acquireErr
 			}
-			return nil, fmt.Errorf("CDP returned non-JSON response for %s: %s", cacheKey, preview)
+
+			started := time.Now()
+			body, fetchErr := tab.Fetch(ctx, cacheKey)
+			CDPFetchDuration.Observe(time.Since(started).Seconds())
+			f.pool.Release(idx)
+
+			if fetchErr != nil {
+				lastErr = fetchErr
+				CDPFetchRequests.WithLabelValues("error").Inc()
+				if attempt < maxFetchRetries-1 {
+					log.Printf("[retry] FetchJSON attempt %d/%d failed for %s: %v", attempt+1, maxFetchRetries, cacheKey, fetchErr)
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(200 * time.Millisecond):
+					}
+				}
+				continue
+			}
+
+			trimmed := strings.TrimSpace(body)
+			if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+				CDPFetchRequests.WithLabelValues("non_json").Inc()
+				preview := trimmed
+				if len(preview) > 200 {
+					preview = preview[:200]
+				}
+				lastErr = fmt.Errorf("CDP returned non-JSON response for %s: %s", cacheKey, preview)
+				if attempt < maxFetchRetries-1 {
+					log.Printf("[retry] FetchJSON attempt %d/%d non-JSON for %s: %s", attempt+1, maxFetchRetries, cacheKey, preview)
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(200 * time.Millisecond):
+					}
+				}
+				continue
+			}
+
+			CDPFetchRequests.WithLabelValues("ok").Inc()
+			UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), "200").Inc()
+
+			f.cache.Store(cacheKey, &cacheEntry{
+				value:     body,
+				expiresAt: time.Now().Add(f.ttl),
+			})
+			return body, nil
 		}
-
-		CDPFetchRequests.WithLabelValues("ok").Inc()
-		UpstreamStatus.WithLabelValues(endpointFromURL(apiURL), "200").Inc()
-
-		f.cache.Store(cacheKey, &cacheEntry{
-			value:     body,
-			expiresAt: time.Now().Add(f.ttl),
-		})
-		return body, nil
+		return nil, lastErr
 	})
 
 	if shared {
@@ -117,45 +142,78 @@ func (f *CachedFetcher) BatchFetchJSON(ctx context.Context, apiURLs []string) (m
 		return results, nil
 	}
 
-	tab, idx, err := f.pool.Acquire(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer f.pool.Release(idx)
+	var lastErr error
+	for attempt := 0; attempt < maxFetchRetries; attempt++ {
+		tab, idx, err := f.pool.Acquire(ctx)
+		if err != nil {
+			return nil, err
+		}
 
-	started := time.Now()
-	batchResults, err := tab.BatchFetch(ctx, pendingKeys)
-	CDPFetchDuration.Observe(time.Since(started).Seconds())
+		started := time.Now()
+		batchResults, err := tab.BatchFetch(ctx, pendingKeys)
+		CDPFetchDuration.Observe(time.Since(started).Seconds())
+		f.pool.Release(idx)
 
-	if err != nil {
-		CDPFetchRequests.WithLabelValues("error").Add(float64(len(pending)))
-		return nil, err
-	}
-
-	for i, br := range batchResults {
-		if br.Status == "fulfilled" {
-			trimmed := strings.TrimSpace(br.Value)
-			if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
-				CDPFetchRequests.WithLabelValues("ok").Inc()
-				UpstreamStatus.WithLabelValues(endpointFromURL(pending[i]), "200").Inc()
-				f.cache.Store(pendingKeys[i], &cacheEntry{
-					value:     br.Value,
-					expiresAt: time.Now().Add(f.ttl),
-				})
-				results[pending[i]] = br.Value
-			} else {
-				CDPFetchRequests.WithLabelValues("non_json").Inc()
-				preview := trimmed
-				if len(preview) > 200 {
-					preview = preview[:200]
+		if err != nil {
+			lastErr = err
+			CDPFetchRequests.WithLabelValues("error").Add(float64(len(pending)))
+			if attempt < maxFetchRetries-1 {
+				log.Printf("[retry] BatchFetchJSON attempt %d/%d failed for %d URLs: %v", attempt+1, maxFetchRetries, len(pending), err)
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-time.After(200 * time.Millisecond):
 				}
-				return nil, fmt.Errorf("CDP batch non-JSON for %s: %s", pendingKeys[i], preview)
 			}
-		} else {
-			CDPFetchRequests.WithLabelValues("error").Inc()
-			return nil, fmt.Errorf("CDP batch item failed for %s: %s", pendingKeys[i], br.Value)
+			continue
+		}
+
+		batchOK := true
+		for i, br := range batchResults {
+			if br.Status == "fulfilled" {
+				trimmed := strings.TrimSpace(br.Value)
+				if len(trimmed) > 0 && (trimmed[0] == '{' || trimmed[0] == '[') {
+					CDPFetchRequests.WithLabelValues("ok").Inc()
+					UpstreamStatus.WithLabelValues(endpointFromURL(pending[i]), "200").Inc()
+					f.cache.Store(pendingKeys[i], &cacheEntry{
+						value:     br.Value,
+						expiresAt: time.Now().Add(f.ttl),
+					})
+					results[pending[i]] = br.Value
+				} else {
+					CDPFetchRequests.WithLabelValues("non_json").Inc()
+					preview := trimmed
+					if len(preview) > 200 {
+						preview = preview[:200]
+					}
+					lastErr = fmt.Errorf("CDP batch non-JSON for %s: %s", pendingKeys[i], preview)
+					batchOK = false
+					break
+				}
+			} else {
+				CDPFetchRequests.WithLabelValues("error").Inc()
+				lastErr = fmt.Errorf("CDP batch item failed for %s: %s", pendingKeys[i], br.Value)
+				batchOK = false
+				break
+			}
+		}
+
+		if batchOK {
+			return results, nil
+		}
+
+		for _, key := range pending {
+			delete(results, key)
+		}
+		if attempt < maxFetchRetries-1 {
+			log.Printf("[retry] BatchFetchJSON attempt %d/%d partial failure: %v", attempt+1, maxFetchRetries, lastErr)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(200 * time.Millisecond):
+			}
 		}
 	}
 
-	return results, nil
+	return nil, lastErr
 }
