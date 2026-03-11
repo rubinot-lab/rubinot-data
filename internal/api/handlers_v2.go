@@ -147,7 +147,7 @@ func v2GetHighscores(c *gin.Context, validator *validation.Validator, oc *scrape
 		results := make([]domain.HighscoresResult, 0, len(worlds))
 		allSources := make([]string, 0)
 		for _, world := range worlds {
-			highscores, sourceURL, err := scraper.V2FetchHighscores(c.Request.Context(), oc, resolvedBaseURL, world.Name, category, vocation)
+			highscores, sourceURL, err := scraper.V2FetchHighscores(c.Request.Context(), oc, resolvedBaseURL, world.Name, world.ID, category, vocation)
 			if err != nil {
 				return endpointResult{Sources: append(allSources, sourceURL)}, err
 			}
@@ -161,12 +161,12 @@ func v2GetHighscores(c *gin.Context, validator *validation.Validator, oc *scrape
 		}, nil
 	}
 
-	canonicalWorld, _, worldOK := validator.WorldExists(worldInput)
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
 	if !worldOK {
 		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
 	}
 
-	highscores, sourceURL, err := scraper.V2FetchHighscores(c.Request.Context(), oc, resolvedBaseURL, canonicalWorld, category, vocation)
+	highscores, sourceURL, err := scraper.V2FetchHighscores(c.Request.Context(), oc, resolvedBaseURL, canonicalWorld, worldID, category, vocation)
 	if err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}

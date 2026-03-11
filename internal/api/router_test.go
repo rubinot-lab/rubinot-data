@@ -730,7 +730,9 @@ func newMockCDPForRouter(t *testing.T, apiUpstream *httptest.Server) *httptest.S
 								encoded, _ := json.Marshal(payload)
 								value = string(encoded)
 							} else {
-								value = string(raw)
+								wrapper := map[string]any{"ok": true, "status": resp.StatusCode, "body": string(raw)}
+								encoded, _ := json.Marshal(wrapper)
+								value = string(encoded)
 							}
 						}
 					} else {

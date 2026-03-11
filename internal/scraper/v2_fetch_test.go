@@ -417,7 +417,7 @@ func TestV2FetchHighscores(t *testing.T) {
 	body, _ := json.Marshal(payload)
 
 	q := url.Values{}
-	q.Set("world", "1")
+	q.Set("world", "15")
 	q.Set("category", "experience")
 	q.Set("vocation", "0")
 	path := "/api/highscores?" + q.Encode()
@@ -429,7 +429,7 @@ func TestV2FetchHighscores(t *testing.T) {
 	category := validation.HighscoreCategory{ID: 1, Name: "Experience", Slug: "experience"}
 	vocation := validation.HighscoreVocation{Name: "(all)", ProfessionID: 0}
 
-	result, sourceURL, err := V2FetchHighscores(context.Background(), oc, "http://test.local", "1", category, vocation)
+	result, sourceURL, err := V2FetchHighscores(context.Background(), oc, "http://test.local", "Belaria", 15, category, vocation)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

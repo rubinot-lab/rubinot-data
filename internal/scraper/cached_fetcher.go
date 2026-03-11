@@ -61,7 +61,11 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 		trimmed := strings.TrimSpace(body)
 		if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
 			CDPFetchRequests.WithLabelValues("non_json").Inc()
-			return nil, fmt.Errorf("CDP returned non-JSON response for %s", cacheKey)
+			preview := trimmed
+			if len(preview) > 200 {
+				preview = preview[:200]
+			}
+			return nil, fmt.Errorf("CDP returned non-JSON response for %s: %s", cacheKey, preview)
 		}
 
 		CDPFetchRequests.WithLabelValues("ok").Inc()
@@ -141,7 +145,11 @@ func (f *CachedFetcher) BatchFetchJSON(ctx context.Context, apiURLs []string) (m
 				results[pending[i]] = br.Value
 			} else {
 				CDPFetchRequests.WithLabelValues("non_json").Inc()
-				return nil, fmt.Errorf("CDP returned non-JSON for %s", pendingKeys[i])
+				preview := trimmed
+				if len(preview) > 200 {
+					preview = preview[:200]
+				}
+				return nil, fmt.Errorf("CDP batch non-JSON for %s: %s", pendingKeys[i], preview)
 			}
 		} else {
 			CDPFetchRequests.WithLabelValues("error").Inc()

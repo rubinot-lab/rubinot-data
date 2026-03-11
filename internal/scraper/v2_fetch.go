@@ -171,13 +171,14 @@ func V2FetchHighscores(
 	ctx context.Context,
 	oc *OptimizedClient,
 	baseURL string,
-	worldRef string,
+	worldName string,
+	worldID int,
 	category validation.HighscoreCategory,
 	vocation validation.HighscoreVocation,
 ) (domain.HighscoresResult, string, error) {
 	query := url.Values{}
-	if strings.TrimSpace(worldRef) != "" {
-		query.Set("world", strings.TrimSpace(worldRef))
+	if worldID > 0 {
+		query.Set("world", strconv.Itoa(worldID))
 	}
 	query.Set("category", category.Slug)
 	query.Set("vocation", fmt.Sprintf("%d", vocation.ProfessionID))
@@ -187,7 +188,7 @@ func V2FetchHighscores(
 		return domain.HighscoresResult{}, sourceURL, err
 	}
 
-	world := strings.TrimSpace(worldRef)
+	world := strings.TrimSpace(worldName)
 	items := make([]domain.Highscore, 0, len(payload.Players))
 	for _, row := range payload.Players {
 		items = append(items, domain.Highscore{

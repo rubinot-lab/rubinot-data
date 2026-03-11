@@ -133,8 +133,15 @@ func newMockCDPServer(t *testing.T, contentForPath func(string) string) *httptes
 				matches := cdpFetchPathRe.FindAllStringSubmatch(req.Params.Expression, -1)
 				if len(matches) > 0 && contentForPath != nil {
 					isBatch := strings.Contains(req.Params.Expression, "Promise.allSettled")
+					isBinary := strings.Contains(req.Params.Expression, "arrayBuffer")
 					if len(matches) == 1 && !isBatch {
-						value = contentForPath(matches[0][1])
+						body := contentForPath(matches[0][1])
+						if isBinary {
+							value = body
+						} else {
+							wrapper := map[string]any{"ok": true, "status": 200, "body": body}
+							value = mustJSON(t, wrapper)
+						}
 					} else {
 						results := make([]map[string]string, 0, len(matches))
 						for _, match := range matches {

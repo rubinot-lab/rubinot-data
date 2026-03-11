@@ -199,15 +199,61 @@ func (c *CDPClient) Evaluate(ctx context.Context, expression string) (string, er
 	}
 }
 
+type cdpFetchResult struct {
+	OK     bool   `json:"ok"`
+	Status int    `json:"status"`
+	Body   string `json:"body"`
+}
+
 func (c *CDPClient) Fetch(ctx context.Context, apiPath string) (string, error) {
+	escaped := strings.ReplaceAll(apiPath, "\\", "\\\\")
+	escaped = strings.ReplaceAll(escaped, "'", "\\'")
+
 	expression := fmt.Sprintf(`
 		(async () => {
-			const resp = await fetch('%s');
-			return await resp.text();
+			for (let attempt = 0; attempt < 2; attempt++) {
+				try {
+					const resp = await fetch('%s');
+					const text = await resp.text();
+					if (resp.ok) {
+						return JSON.stringify({ ok: true, status: resp.status, body: text });
+					}
+					if ((resp.status === 429 || resp.status >= 500) && attempt === 0) {
+						await new Promise(r => setTimeout(r, 300));
+						continue;
+					}
+					return JSON.stringify({ ok: false, status: resp.status, body: text.substring(0, 500) });
+				} catch (e) {
+					if (attempt === 0) {
+						await new Promise(r => setTimeout(r, 300));
+						continue;
+					}
+					return JSON.stringify({ ok: false, status: 0, body: 'fetch error: ' + String(e.message || e) });
+				}
+			}
+			return JSON.stringify({ ok: false, status: 0, body: 'retries exhausted' });
 		})()
-	`, strings.ReplaceAll(apiPath, "'", "\\'"))
+	`, escaped)
 
-	return c.Evaluate(ctx, expression)
+	raw, err := c.Evaluate(ctx, expression)
+	if err != nil {
+		return "", err
+	}
+
+	var result cdpFetchResult
+	if err := json.Unmarshal([]byte(raw), &result); err != nil {
+		return "", fmt.Errorf("decode CDP fetch wrapper for %s: %w", apiPath, err)
+	}
+
+	if !result.OK {
+		preview := result.Body
+		if len(preview) > 200 {
+			preview = preview[:200]
+		}
+		return "", fmt.Errorf("upstream HTTP %d for %s: %s", result.Status, apiPath, preview)
+	}
+
+	return result.Body, nil
 }
 
 func (c *CDPClient) FetchBinary(ctx context.Context, apiPath string) ([]byte, int, string, error) {
@@ -267,7 +313,28 @@ func (c *CDPClient) BatchFetch(ctx context.Context, apiPaths []string) ([]BatchR
 	for _, path := range apiPaths {
 		escaped := strings.ReplaceAll(path, "\\", "\\\\")
 		escaped = strings.ReplaceAll(escaped, "'", "\\'")
-		fetchCalls = append(fetchCalls, fmt.Sprintf("fetch('%s').then((resp) => resp.text())", escaped))
+		fetchCalls = append(fetchCalls, fmt.Sprintf(`
+			(async () => {
+				for (let attempt = 0; attempt < 2; attempt++) {
+					try {
+						const resp = await fetch('%s');
+						const text = await resp.text();
+						if (resp.ok) return text;
+						if ((resp.status === 429 || resp.status >= 500) && attempt === 0) {
+							await new Promise(r => setTimeout(r, 300));
+							continue;
+						}
+						throw new Error('HTTP ' + resp.status + ': ' + text.substring(0, 200));
+					} catch (e) {
+						if (attempt === 0 && !String(e.message).startsWith('HTTP ')) {
+							await new Promise(r => setTimeout(r, 300));
+							continue;
+						}
+						throw e;
+					}
+				}
+				throw new Error('retries exhausted');
+			})()`, escaped))
 	}
 
 	expression := fmt.Sprintf(`
