@@ -141,17 +141,16 @@ var (
 	CacheRequests = prometheus.NewCounterVec(
 		prometheus.CounterOpts{
 			Name: "rubinotdata_cache_requests_total",
-			Help: "Cache requests by endpoint and result (placeholder)",
+			Help: "Cache requests by result (hit/miss)",
 		},
-		[]string{"endpoint", "result"},
+		[]string{"result"},
 	)
-	CacheDuration = prometheus.NewHistogramVec(
+	CacheDuration = prometheus.NewHistogram(
 		prometheus.HistogramOpts{
 			Name:    "rubinotdata_cache_duration_seconds",
-			Help:    "Cache operation duration by endpoint (placeholder)",
+			Help:    "Cache lookup duration",
 			Buckets: []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1},
 		},
-		[]string{"endpoint"},
 	)
 	CacheEntries = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
@@ -182,6 +181,25 @@ var (
 			Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2, 5},
 		},
 	)
+
+	SingleflightDedup = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "rubinotdata_singleflight_dedup_total",
+			Help: "Requests served by joining an in-flight singleflight call",
+		},
+	)
+	CDPPoolAvailable = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "rubinotdata_cdp_pool_available",
+			Help: "Number of available tabs in the CDP pool",
+		},
+	)
+	CDPPoolRebuilds = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "rubinotdata_cdp_pool_rebuilds_total",
+			Help: "Total CDP tab reconnection attempts",
+		},
+	)
 )
 
 func init() {
@@ -210,5 +228,8 @@ func init() {
 		CacheStaleServes,
 		CDPFetchRequests,
 		CDPFetchDuration,
+		SingleflightDedup,
+		CDPPoolAvailable,
+		CDPPoolRebuilds,
 	)
 }
