@@ -33,21 +33,21 @@ git checkout main && git pull --ff-only
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
-Pipeline: GitHub Actions → GHCR image (`ghcr.io/giovannirco/rubinot-data`) → GitOps update (`omni-cddlabs-casa`, path `manifests/cddlabs/apps/rubinot/`) → ArgoCD app `rubinot-apps` auto-sync.
+Pipeline: GitHub Actions → GHCR image (`ghcr.io/rubinot-lab/rubinot-data`) → GitOps update (`rubinot-lab/platform-gitops`, path `apps/rubinot/manifests/prod/`) → ArgoCD app `rubinot-lab-rubinot-prod` auto-sync.
 
 See `DEPLOYMENT.md` for full details and troubleshooting.
 
 ### Git identity
 
-All commits and pushes use the `giovannirco` GitHub account:
+All commits and pushes use the `unwashed-and-dazed` GitHub account:
 ```bash
-gh auth switch --hostname github.com --user giovannirco
+gh auth switch --hostname github.com --user unwashed-and-dazed
 ```
 
 ### Verify deploy
 
 ```bash
-gh run list --repo giovannirco/rubinot-data --limit 5
+gh run list --repo rubinot-lab/rubinot-data --limit 5
 kubectl get applications -n argocd | grep rubinot-apps
 ```
 
