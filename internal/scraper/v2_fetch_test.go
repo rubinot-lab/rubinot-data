@@ -478,6 +478,78 @@ func TestV2FetchKillstatistics(t *testing.T) {
 	}
 }
 
+func TestV2FetchHighscoresBatch(t *testing.T) {
+	makePayload := func(worldName string) highscoresAPIResponse {
+		return highscoresAPIResponse{
+			Players: []struct {
+				Rank      int         `json:"rank"`
+				ID        int         `json:"id"`
+				Name      string      `json:"name"`
+				Level     int         `json:"level"`
+				Vocation  int         `json:"vocation"`
+				WorldID   int         `json:"world_id"`
+				WorldName string      `json:"worldName"`
+				Value     interface{} `json:"value"`
+			}{
+				{Rank: 1, ID: 1, Name: "Player1", Level: 500, Vocation: 4, WorldID: 1, WorldName: worldName, Value: 999},
+				{Rank: 2, ID: 2, Name: "Player2", Level: 400, Vocation: 5, WorldID: 1, WorldName: worldName, Value: 888},
+			},
+			TotalCount: 2,
+		}
+	}
+
+	body1, _ := json.Marshal(makePayload("Elysian"))
+	body2, _ := json.Marshal(makePayload("Belaria"))
+
+	q1 := url.Values{}
+	q1.Set("world", "1")
+	q1.Set("category", "experience")
+	q1.Set("vocation", "5")
+
+	q2 := url.Values{}
+	q2.Set("world", "15")
+	q2.Set("category", "experience")
+	q2.Set("vocation", "5")
+
+	oc := newTestOC(t, map[string]string{
+		"/api/highscores?" + q1.Encode(): string(body1),
+		"/api/highscores?" + q2.Encode(): string(body2),
+	})
+
+	worlds := []validation.World{
+		{ID: 1, Name: "Elysian"},
+		{ID: 15, Name: "Belaria"},
+	}
+	category := validation.HighscoreCategory{ID: 1, Name: "Experience", Slug: "experience"}
+	vocation := validation.HighscoreVocation{Name: "Knights", ProfessionID: 5}
+
+	results, sources, err := V2FetchHighscoresBatch(context.Background(), oc, "http://test.local", worlds, category, vocation)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+	if len(sources) != 2 {
+		t.Fatalf("expected 2 sources, got %d", len(sources))
+	}
+	if results[0].World != "Elysian" {
+		t.Errorf("expected first world Elysian, got %s", results[0].World)
+	}
+	if results[1].World != "Belaria" {
+		t.Errorf("expected second world Belaria, got %s", results[1].World)
+	}
+	if len(results[0].HighscoreList) != 2 {
+		t.Errorf("expected 2 entries for Elysian, got %d", len(results[0].HighscoreList))
+	}
+	if results[0].Category != "experience" {
+		t.Errorf("expected category experience, got %s", results[0].Category)
+	}
+	if results[0].Vocation != "Knights" {
+		t.Errorf("expected vocation Knights, got %s", results[0].Vocation)
+	}
+}
+
 func TestV2FetchBoosted(t *testing.T) {
 	payload := boostedAPIResponse{}
 	payload.Boss.ID = 1

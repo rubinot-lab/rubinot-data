@@ -556,6 +556,79 @@ func V2FetchKillstatisticsBatch(ctx context.Context, oc *OptimizedClient, baseUR
 	return results, apiURLs, nil
 }
 
+func V2FetchHighscoresBatch(
+	ctx context.Context,
+	oc *OptimizedClient,
+	baseURL string,
+	worlds []validation.World,
+	category validation.HighscoreCategory,
+	vocation validation.HighscoreVocation,
+) ([]domain.HighscoresResult, []string, error) {
+	base := strings.TrimRight(baseURL, "/")
+	apiURLs := make([]string, 0, len(worlds))
+	for _, world := range worlds {
+		query := url.Values{}
+		query.Set("world", strconv.Itoa(world.ID))
+		query.Set("category", category.Slug)
+		query.Set("vocation", fmt.Sprintf("%d", vocation.ProfessionID))
+		apiURLs = append(apiURLs, fmt.Sprintf("%s/api/highscores?%s", base, query.Encode()))
+	}
+
+	bodies, err := oc.BatchFetchJSON(ctx, apiURLs)
+	if err != nil {
+		return nil, apiURLs, err
+	}
+
+	results := make([]domain.HighscoresResult, 0, len(worlds))
+	for i, apiURL := range apiURLs {
+		body, ok := bodies[apiURL]
+		if !ok {
+			return nil, apiURLs, fmt.Errorf("missing response for %s", apiURL)
+		}
+		var payload highscoresAPIResponse
+		if parseErr := parseJSONBody(body, &payload); parseErr != nil {
+			return nil, apiURLs, parseErr
+		}
+
+		worldName := worlds[i].Name
+		items := make([]domain.Highscore, 0, len(payload.Players))
+		for _, row := range payload.Players {
+			items = append(items, domain.Highscore{
+				Rank:       row.Rank,
+				ID:         row.ID,
+				Name:       strings.TrimSpace(row.Name),
+				Vocation:   fallbackString(vocationNameByID(row.Vocation), "Unknown"),
+				VocationID: row.Vocation,
+				World:      resolveHighscoreWorldName(row.WorldName, row.WorldID, worldName),
+				WorldID:    row.WorldID,
+				Level:      row.Level,
+				Value:      fmt.Sprintf("%v", row.Value),
+			})
+		}
+
+		totalRecords := payload.TotalCount
+		if totalRecords <= 0 {
+			totalRecords = len(items)
+		}
+
+		results = append(results, domain.HighscoresResult{
+			World:         worldName,
+			Category:      category.Slug,
+			Vocation:      vocation.Name,
+			CachedAt:      payload.CachedAt,
+			HighscoreList: items,
+			HighscorePage: domain.HighscorePage{
+				CurrentPage:  1,
+				TotalPages:   1,
+				TotalRecords: totalRecords,
+			},
+			AvailableSeasons: payload.AvailableSeasons,
+		})
+	}
+
+	return results, apiURLs, nil
+}
+
 func V2FetchAllDeaths(ctx context.Context, oc *OptimizedClient, baseURL, worldName string, worldID int, filters DeathsFilters) (domain.DeathsResult, []string, error) {
 	buildURL := func(page int) string {
 		query := url.Values{}
