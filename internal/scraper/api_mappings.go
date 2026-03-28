@@ -20,27 +20,27 @@ var worldIDToName = map[int]string{
 	17: "Bellum",
 	18: "Mystian",
 	21: "Tenebrium",
-	22: "SerenianI",
-	23: "SerenianII",
-	24: "SerenianIII",
-	25: "SerenianIV",
+	22: "Serenian",
+	23: "Etherian",
+	24: "Halorian",
+	25: "Divinian",
 }
 
 var worldNameToID = map[string]int{
-	"elysian":     1,
-	"lunarian":    9,
-	"spectrum":    10,
-	"auroria":     11,
-	"solarian":    12,
-	"belaria":     15,
-	"vesperia":    16,
-	"bellum":      17,
-	"mystian":     18,
-	"tenebrium":   21,
-	"sereniani":   22,
-	"serenianii":  23,
-	"serenianiii": 24,
-	"serenianiv":  25,
+	"elysian":   1,
+	"lunarian":  9,
+	"spectrum":  10,
+	"auroria":   11,
+	"solarian":  12,
+	"belaria":   15,
+	"vesperia":  16,
+	"bellum":    17,
+	"mystian":   18,
+	"tenebrium": 21,
+	"serenian":  22,
+	"etherian":  23,
+	"halorian":  24,
+	"divinian":  25,
 }
 
 type WorldMapping struct {
@@ -89,7 +89,7 @@ func worldNameByID(id int) string {
 	return ""
 }
 
-func worldIDByName(name string) (int, bool) {
+func WorldIDByName(name string) (int, bool) {
 	worldMu.RLock()
 	id, ok := worldNameToID[normalizeLookup(name)]
 	worldMu.RUnlock()

@@ -1526,10 +1526,21 @@ func discoverWorlds(ctx context.Context, client *scraper.Client, baseURL string)
 
 	worlds := make([]validation.World, 0, len(payload.Worlds))
 	for _, row := range payload.Worlds {
-		if row.ID <= 0 || strings.TrimSpace(row.Name) == "" {
+		name := strings.TrimSpace(row.Name)
+		if name == "" {
 			continue
 		}
-		worlds = append(worlds, validation.World{ID: row.ID, Name: strings.TrimSpace(row.Name)})
+		id := row.ID
+		if id <= 0 {
+			if mapped, ok := scraper.WorldIDByName(name); ok {
+				id = mapped
+			}
+		}
+		if id <= 0 {
+			log.Printf("world %q skipped: no ID from API or mapping", name)
+			continue
+		}
+		worlds = append(worlds, validation.World{ID: id, Name: name})
 	}
 	if len(worlds) == 0 {
 		scraper.DiscoveryTotal.WithLabelValues("worlds", "error").Inc()
