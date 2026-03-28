@@ -144,20 +144,14 @@ func v2GetHighscores(c *gin.Context, validator *validation.Validator, oc *scrape
 
 	if isAllWorldsToken(worldInput) {
 		worlds := validator.AllWorlds()
-		results := make([]domain.HighscoresResult, 0, len(worlds))
-		allSources := make([]string, 0)
-		for _, world := range worlds {
-			highscores, sourceURL, err := scraper.V2FetchHighscores(c.Request.Context(), oc, resolvedBaseURL, world.Name, world.ID, category, vocation)
-			if err != nil {
-				return endpointResult{Sources: append(allSources, sourceURL)}, err
-			}
-			results = append(results, highscores)
-			allSources = append(allSources, sourceURL)
+		results, sources, err := scraper.V2FetchHighscoresBatch(c.Request.Context(), oc, resolvedBaseURL, worlds, category, vocation)
+		if err != nil {
+			return endpointResult{Sources: sources}, err
 		}
 		return endpointResult{
 			PayloadKey: "highscores",
 			Payload:    results,
-			Sources:    allSources,
+			Sources:    sources,
 		}, nil
 	}
 
