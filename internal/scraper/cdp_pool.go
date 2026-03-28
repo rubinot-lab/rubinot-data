@@ -119,8 +119,13 @@ func (p *CDPPool) rebuildTab(ctx context.Context, idx int) (*CDPClient, error) {
 			break
 		}
 	}
+
 	if creator == nil {
-		return nil, fmt.Errorf("no healthy tabs available to create target")
+		recovered, err := p.recoverBaseTab(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("pool recovery failed: %w", err)
+		}
+		creator = recovered
 	}
 
 	tab, err := p.createTab(ctx, creator, idx)
@@ -130,6 +135,29 @@ func (p *CDPPool) rebuildTab(ctx context.Context, idx int) (*CDPClient, error) {
 
 	p.tabs[idx] = tab
 	return tab, nil
+}
+
+func (p *CDPPool) recoverBaseTab(ctx context.Context) (*CDPClient, error) {
+	discovery := NewCDPClient(p.cdpURL)
+	wsURL, err := discovery.DiscoverPageTarget(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("discover page target: %w", err)
+	}
+
+	tab0 := NewCDPClient(p.cdpURL)
+	if err := tab0.ConnectToURL(ctx, wsURL); err != nil {
+		return nil, fmt.Errorf("connect recovered tab: %w", err)
+	}
+
+	for i, t := range p.tabs {
+		if t == nil || !t.IsConnected() {
+			p.tabs[i] = tab0
+			return tab0, nil
+		}
+	}
+
+	p.tabs[0] = tab0
+	return tab0, nil
 }
 
 func (p *CDPPool) Close() {
