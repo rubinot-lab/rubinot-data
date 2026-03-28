@@ -4,14 +4,14 @@
 
 Release flow (tag-driven):
 ```bash
-gh auth switch --hostname github.com --user giovannirco
+gh auth switch --hostname github.com --user unwashed-and-dazed
 git checkout main && git pull --ff-only
 git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 Post-deploy verification:
-1. `gh run list --repo giovannirco/rubinot-data --limit 3` — confirm workflow success
-2. `kubectl get applications -n argocd | grep rubinot-apps` — check ArgoCD sync
+1. `gh run list --repo rubinot-lab/rubinot-data --limit 3` — confirm workflow success
+2. `kubectl get applications -n argocd | grep rubinot-lab-rubinot-prod` — check ArgoCD sync
 3. Check pod health in `rubinot` namespace via k8s MCP
 
 ## Investigation agent
@@ -28,4 +28,4 @@ Before making changes:
 - `make test` — run tests
 - `make lint` — go vet
 - Use semantic commits
-- All commits via `giovannirco` GitHub account
+- All commits via `unwashed-and-dazed` GitHub account
