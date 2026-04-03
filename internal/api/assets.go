@@ -38,7 +38,6 @@ func handleCreatureAsset(assetsBaseDir string) gin.HandlerFunc {
 		}
 
 		c.Header("Cache-Control", "public, max-age=86400")
-		c.Header("Last-Modified", time.Now().UTC().Format(http.TimeFormat))
 		c.Data(http.StatusOK, "image/gif", data)
 	}
 }
@@ -68,6 +67,8 @@ func handleStaticAsset(assetsBaseDir, subDir, contentType, extension string) gin
 	}
 }
 
+var itemProxyClient = &http.Client{Timeout: 10 * time.Second}
+
 func handleItemAsset(assetsBaseDir string, upstreamStaticURL string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		itemIDStr := c.Param("itemId")
@@ -92,8 +93,7 @@ func handleItemAsset(assetsBaseDir string, upstreamStaticURL string) gin.Handler
 		}
 
 		upstreamURL := fmt.Sprintf("%s/objects/%d.gif", strings.TrimRight(upstreamStaticURL, "/"), itemID)
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, fetchErr := client.Get(upstreamURL)
+		resp, fetchErr := itemProxyClient.Get(upstreamURL)
 		if fetchErr != nil || resp.StatusCode != http.StatusOK {
 			if resp != nil {
 				resp.Body.Close()
