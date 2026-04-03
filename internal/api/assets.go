@@ -43,6 +43,31 @@ func handleCreatureAsset(assetsBaseDir string) gin.HandlerFunc {
 	}
 }
 
+func handleStaticAsset(assetsBaseDir, subDir, contentType, extension string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		name := c.Param("name")
+		if name == "" {
+			name = c.Param("type")
+		}
+		if name == "" {
+			c.String(http.StatusBadRequest, "name required")
+			return
+		}
+
+		name = filepath.Base(name)
+
+		localPath := filepath.Join(assetsBaseDir, subDir, name+extension)
+		data, err := os.ReadFile(localPath)
+		if err != nil {
+			c.String(http.StatusNotFound, "not found")
+			return
+		}
+
+		c.Header("Cache-Control", "public, max-age=86400")
+		c.Data(http.StatusOK, contentType, data)
+	}
+}
+
 func handleItemAsset(assetsBaseDir string, upstreamStaticURL string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		itemIDStr := c.Param("itemId")

@@ -133,6 +133,82 @@ func TestItemAssetHandler(t *testing.T) {
 	}
 }
 
+func TestCharmAssetHandler(t *testing.T) {
+	tmpDir := t.TempDir()
+	charmsDir := filepath.Join(tmpDir, "charms")
+	os.MkdirAll(charmsDir, 0755)
+	os.WriteFile(filepath.Join(charmsDir, "low_blow.png"), []byte("PNG_DATA"), 0644)
+	os.WriteFile(filepath.Join(charmsDir, "savage_blow.png"), []byte("PNG_DATA"), 0644)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/v1/assets/charms/:name", handleStaticAsset(tmpDir, "charms", "image/png", ".png"))
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+		wantType   string
+	}{
+		{"existing charm", "/v1/assets/charms/low_blow", http.StatusOK, "image/png"},
+		{"another charm", "/v1/assets/charms/savage_blow", http.StatusOK, "image/png"},
+		{"nonexistent charm", "/v1/assets/charms/nonexistent", http.StatusNotFound, ""},
+		{"path traversal attempt", "/v1/assets/charms/../../etc/passwd", http.StatusNotFound, ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d: %s", tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			if tc.wantType != "" && rec.Header().Get("Content-Type") != tc.wantType {
+				t.Fatalf("expected %q, got %q", tc.wantType, rec.Header().Get("Content-Type"))
+			}
+			if tc.wantStatus == http.StatusOK && rec.Header().Get("Cache-Control") == "" {
+				t.Fatal("expected Cache-Control header")
+			}
+		})
+	}
+}
+
+func TestCreatureTypeAssetHandler(t *testing.T) {
+	tmpDir := t.TempDir()
+	typesDir := filepath.Join(tmpDir, "creature-types")
+	os.MkdirAll(typesDir, 0755)
+	os.WriteFile(filepath.Join(typesDir, "Demon.png"), []byte("PNG_DATA"), 0644)
+	os.WriteFile(filepath.Join(typesDir, "Undead.png"), []byte("PNG_DATA"), 0644)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+	router.GET("/v1/assets/creature-types/:type", handleStaticAsset(tmpDir, "creature-types", "image/png", ".png"))
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+	}{
+		{"existing type", "/v1/assets/creature-types/Demon", http.StatusOK},
+		{"another type", "/v1/assets/creature-types/Undead", http.StatusOK},
+		{"nonexistent type", "/v1/assets/creature-types/FakeType", http.StatusNotFound},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("expected %d, got %d", tc.wantStatus, rec.Code)
+			}
+		})
+	}
+}
+
 func TestItemAssetHandlerUpstreamProxy(t *testing.T) {
 	minimalGIF := []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x00\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")
 
