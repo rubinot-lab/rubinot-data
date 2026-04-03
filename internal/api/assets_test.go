@@ -1,6 +1,8 @@
 package api
 
 import (
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -206,6 +208,113 @@ func TestCreatureTypeAssetHandler(t *testing.T) {
 				t.Fatalf("expected %d, got %d", tc.wantStatus, rec.Code)
 			}
 		})
+	}
+}
+
+func TestToTitleCase(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"ancient_scarab", "Ancient_Scarab"},
+		{"ferumbras", "Ferumbras"},
+		{"dragon_lord", "Dragon_Lord"},
+		{"echo_of_vemiath", "Echo_Of_Vemiath"},
+		{"elemental_forces", "Elemental_Forces"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			got := toTitleCase(tc.input)
+			if got != tc.want {
+				t.Fatalf("toTitleCase(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCreatureAssetHandlerUpstreamProxy(t *testing.T) {
+	minimalGIF := []byte("GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\xff\xff\x00\x00\x00!\xf9\x04\x00\x00\x00\x00\x00,\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;")
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wiki/Special:Filepath/Echo_Of_Vemiath.gif" {
+			w.Header().Set("Content-Type", "image/gif")
+			w.Write(minimalGIF)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer upstream.Close()
+
+	origClient := creatureProxyClient
+	creatureProxyClient = upstream.Client()
+	origURL := "https://tibia.fandom.com"
+	defer func() { creatureProxyClient = origClient }()
+
+	tmpDir := t.TempDir()
+	os.MkdirAll(filepath.Join(tmpDir, "creatures"), 0755)
+
+	gin.SetMode(gin.TestMode)
+	router := gin.New()
+
+	handler := func(c *gin.Context) {
+		name := c.Param("name")
+		normalized := normalizeCreatureName(name)
+
+		localPath := filepath.Join(tmpDir, "creatures", normalized+".gif")
+		if data, err := os.ReadFile(localPath); err == nil {
+			c.Header("Cache-Control", "public, max-age=86400")
+			c.Data(http.StatusOK, "image/gif", data)
+			return
+		}
+
+		titleCased := toTitleCase(normalized)
+		upstreamURL := fmt.Sprintf("%s/wiki/Special:Filepath/%s.gif", upstream.URL, titleCased)
+		resp, fetchErr := creatureProxyClient.Get(upstreamURL)
+		if fetchErr != nil || resp.StatusCode != http.StatusOK {
+			if resp != nil {
+				resp.Body.Close()
+			}
+			c.String(http.StatusNotFound, "creature not found")
+			return
+		}
+		defer resp.Body.Close()
+
+		body, _ := io.ReadAll(resp.Body)
+		os.MkdirAll(filepath.Dir(localPath), 0755)
+		os.WriteFile(localPath, body, 0644)
+
+		c.Header("Cache-Control", "public, max-age=86400")
+		c.Data(http.StatusOK, "image/gif", body)
+	}
+	_ = origURL
+
+	router.GET("/v1/assets/creatures/:name", handler)
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/assets/creatures/echo_of_vemiath", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from upstream, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	cached, err := os.ReadFile(filepath.Join(tmpDir, "creatures", "echo_of_vemiath.gif"))
+	if err != nil {
+		t.Fatalf("expected cached file: %v", err)
+	}
+	if len(cached) != len(minimalGIF) {
+		t.Fatalf("cached size mismatch: %d vs %d", len(cached), len(minimalGIF))
+	}
+
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/v1/assets/creatures/echo_of_vemiath", nil))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 from cache, got %d", rec2.Code)
+	}
+
+	rec3 := httptest.NewRecorder()
+	router.ServeHTTP(rec3, httptest.NewRequest(http.MethodGet, "/v1/assets/creatures/nonexistent_boss", nil))
+	if rec3.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec3.Code)
 	}
 }
 
