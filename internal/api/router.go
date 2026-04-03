@@ -26,14 +26,16 @@ const (
 )
 
 var (
-	resolvedBaseURL  string
-	resolvedOpts     scraper.FetchOptions
-	currentValidator atomic.Pointer[validation.Validator]
+	resolvedBaseURL   string
+	resolvedOpts      scraper.FetchOptions
+	resolvedAssetsDir string
+	currentValidator  atomic.Pointer[validation.Validator]
 )
 
 func NewRouter() (*gin.Engine, error) {
 	resolvedBaseURL = getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
 	resolvedOpts = scrapeFetchOptions()
+	resolvedAssetsDir = getEnv("ASSETS_DIR", "assets")
 
 	validator, err := bootstrapValidator(context.Background())
 	if err != nil {
@@ -125,6 +127,10 @@ func NewRouter() (*gin.Engine, error) {
 		}))
 		v1.GET("/outfit", getOutfit)
 		v1.GET("/outfit/:name", getOutfitByCharacterName)
+		v1.GET("/assets/creatures/:name", handleCreatureAsset(resolvedAssetsDir))
+		v1.GET("/assets/items/:itemId", handleItemAsset(resolvedAssetsDir, "https://static.rubinot.com"))
+		v1.GET("/assets/charms/:name", handleStaticAsset(resolvedAssetsDir, "charms", "image/png", ".png"))
+		v1.GET("/assets/creature-types/:type", handleStaticAsset(resolvedAssetsDir, "creature-types", "image/png", ".png"))
 		v1.GET("/events/schedule", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return getEventsSchedule(c)
 		}))

@@ -1,0 +1,58 @@
+name: Asset Sync (disabled)
+
+# DISABLED — enable when ready for automated asset discovery
+# Uncomment the schedule trigger and remove 'if: false' from jobs to activate
+#
+# This workflow:
+# 1. Records the daily boosted boss/creature looktype from data.rubinot.dev
+# 2. Downloads any missing creature GIFs
+# 3. Creates a PR with new assets if changes detected
+
+on:
+  workflow_dispatch: {}
+  # schedule:
+  #   - cron: '0 12 * * *'  # Daily at noon UTC
+
+jobs:
+  sync-boosted:
+    if: false  # DISABLED — remove this line to enable
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record boosted boss/creature looktype
+        run: |
+          BOOSTED=$(curl -sf https://data.rubinot.dev/v1/boosted || echo '{}')
+          BOSS_NAME=$(echo "$BOOSTED" | jq -r '.boosted.boss.name // empty')
+          BOSS_LOOKTYPE=$(echo "$BOOSTED" | jq -r '.boosted.boss.looktype // empty')
+          CREATURE_NAME=$(echo "$BOOSTED" | jq -r '.boosted.monster.name // empty')
+          CREATURE_LOOKTYPE=$(echo "$BOOSTED" | jq -r '.boosted.monster.looktype // empty')
+
+          echo "Boss: $BOSS_NAME (looktype: $BOSS_LOOKTYPE)"
+          echo "Creature: $CREATURE_NAME (looktype: $CREATURE_LOOKTYPE)"
+
+          # TODO: Update creature-registry.yaml with looktype mappings
+          # TODO: Download creature GIF if missing from assets/creatures/
+
+      - name: Check for changes
+        id: changes
+        run: |
+          if [ -n "$(git status --porcelain assets/)" ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create PR with new assets
+        if: steps.changes.outputs.has_changes == 'true'
+        run: |
+          git config user.name "rubinot-bot"
+          git config user.email "bot@rubinot.dev"
+          BRANCH="chore/asset-sync-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH"
+          git add assets/
+          git commit -m "chore(assets): auto-sync creature assets $(date +%Y-%m-%d)"
+          git push origin "$BRANCH"
+          gh pr create --title "chore(assets): auto-sync creature assets" --body "Automated asset sync from daily boosted API"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
