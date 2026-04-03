@@ -91,5 +91,9 @@ func registerV2Routes(router *gin.Engine, oc *scraper.OptimizedClient) {
 		}))
 		v2.GET("/outfit", getOutfit)
 		v2.GET("/outfit/:name", getOutfitByCharacterName)
+		v2.GET("/assets/creatures/:name", handleCreatureAsset(resolvedAssetsDir))
+		v2.GET("/assets/items/:itemId", handleItemAsset(resolvedAssetsDir, "https://static.rubinot.com"))
+		v2.GET("/assets/charms/:name", handleStaticAsset(resolvedAssetsDir, "charms", "image/png", ".png"))
+		v2.GET("/assets/creature-types/:type", handleStaticAsset(resolvedAssetsDir, "creature-types", "image/png", ".png"))
 	}
 }

@@ -178,6 +178,48 @@ func TestRouterOutfitBinary(t *testing.T) {
 	}
 }
 
+func TestRouterAssetRoutesRegistered(t *testing.T) {
+	api := newHappyAPIUpstream(t)
+	defer api.Close()
+
+	cdpSrv := newMockCDPForRouter(t, api)
+	defer cdpSrv.Close()
+
+	fs := newFakeFlareSolverrForRouter(t, eventsFixtureHTML)
+	defer fs.Close()
+
+	router := newIntegrationTestRouter(t, fs.URL, api.URL, cdpSrv.URL)
+
+	tests := []struct {
+		name       string
+		path       string
+		wantStatus int
+		wantBody   string
+	}{
+		{"v1 creature asset", "/v1/assets/creatures/nonexistent", http.StatusNotFound, "creature not found"},
+		{"v1 item asset invalid", "/v1/assets/items/abc", http.StatusBadRequest, "invalid item ID"},
+		{"v1 charm asset", "/v1/assets/charms/nonexistent", http.StatusNotFound, "not found"},
+		{"v1 creature-type asset", "/v1/assets/creature-types/nonexistent", http.StatusNotFound, "not found"},
+		{"v2 creature asset", "/v2/assets/creatures/nonexistent", http.StatusNotFound, "creature not found"},
+		{"v2 item asset invalid", "/v2/assets/items/abc", http.StatusBadRequest, "invalid item ID"},
+		{"v2 charm asset", "/v2/assets/charms/nonexistent", http.StatusNotFound, "not found"},
+		{"v2 creature-type asset", "/v2/assets/creature-types/nonexistent", http.StatusNotFound, "not found"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := performRequest(router, http.MethodGet, tc.path)
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("path %q: expected status %d, got %d: %s", tc.path, tc.wantStatus, rec.Code, rec.Body.String())
+			}
+			body := rec.Body.String()
+			if body != tc.wantBody {
+				t.Fatalf("path %q: expected body %q, got %q", tc.path, tc.wantBody, body)
+			}
+		})
+	}
+}
+
 func TestRouterOpenAPISpecIncludesRegisteredRoutes(t *testing.T) {
 	api := newHappyAPIUpstream(t)
 	defer api.Close()
