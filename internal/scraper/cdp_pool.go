@@ -77,12 +77,18 @@ func (p *CDPPool) warmFlareSolverrSession(ctx context.Context) error {
 }
 
 func (p *CDPPool) Init(ctx context.Context) error {
-	if err := p.warmFlareSolverrSession(ctx); err != nil {
-		log.Printf("[cdp-pool] FlareSolverr warm failed (will retry): %v", err)
-		time.Sleep(3 * time.Second)
-		if err2 := p.warmFlareSolverrSession(ctx); err2 != nil {
-			return fmt.Errorf("FlareSolverr session warm failed: %w", err2)
+	var warmErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		warmErr = p.warmFlareSolverrSession(ctx)
+		if warmErr == nil {
+			break
 		}
+		wait := time.Duration(attempt+1) * 3 * time.Second
+		log.Printf("[cdp-pool] FlareSolverr warm attempt %d/10 failed (waiting %s): %v", attempt+1, wait, warmErr)
+		time.Sleep(wait)
+	}
+	if warmErr != nil {
+		return fmt.Errorf("FlareSolverr session warm failed after 10 attempts: %w", warmErr)
 	}
 
 	discovery := NewCDPClient(p.cdpURL)
