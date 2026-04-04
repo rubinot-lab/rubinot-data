@@ -16,6 +16,15 @@ func (fi *flexInt) UnmarshalJSON(b []byte) error {
 		*fi = flexInt(n)
 		return nil
 	}
+	var bl bool
+	if err := json.Unmarshal(b, &bl); err == nil {
+		if bl {
+			*fi = 1
+		} else {
+			*fi = 0
+		}
+		return nil
+	}
 	var s string
 	if err := json.Unmarshal(b, &s); err == nil {
 		v, _ := strconv.Atoi(s)
@@ -180,12 +189,12 @@ type v2AuctionDetailAPIResponse struct {
 		ItemID   int `json:"itemId"`
 	} `json:"gems"`
 	Bosstiaries []struct {
-		ID      int    `json:"id"`
-		Name    string `json:"name"`
-		Kills   int    `json:"kills"`
-		Gained1 int    `json:"gained1"`
-		Gained2 int    `json:"gained2"`
-		Gained3 int    `json:"gained3"`
+		ID      flexInt `json:"id"`
+		Name    string  `json:"name"`
+		Kills   flexInt `json:"kills"`
+		Gained1 flexInt `json:"gained1"`
+		Gained2 flexInt `json:"gained2"`
+		Gained3 flexInt `json:"gained3"`
 	} `json:"bosstiaries"`
 	BosstiariosTotal  int `json:"bosstiariosTotal"`
 	WeaponProficiency []struct {
@@ -291,7 +300,7 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 	bosstiaries := make([]domain.V2AuctionBosstiary, 0, len(p.Bosstiaries))
 	for _, b := range p.Bosstiaries {
 		bosstiaries = append(bosstiaries, domain.V2AuctionBosstiary{
-			ID: b.ID, Name: b.Name, Kills: b.Kills, Gained1: b.Gained1, Gained2: b.Gained2, Gained3: b.Gained3,
+			ID: int(b.ID), Name: b.Name, Kills: int(b.Kills), Gained1: int(b.Gained1), Gained2: int(b.Gained2), Gained3: int(b.Gained3),
 		})
 	}
 
