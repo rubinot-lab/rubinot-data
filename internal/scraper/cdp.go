@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -59,14 +58,32 @@ type cdpBinaryResult struct {
 }
 
 type CDPClient struct {
-	mu      sync.Mutex
+	sem     chan struct{}
 	conn    *websocket.Conn
 	baseURL string
 	nextID  atomic.Int64
 }
 
 func NewCDPClient(baseURL string) *CDPClient {
-	return &CDPClient{baseURL: strings.TrimRight(baseURL, "/")}
+	sem := make(chan struct{}, 1)
+	return &CDPClient{baseURL: strings.TrimRight(baseURL, "/"), sem: sem}
+}
+
+func (c *CDPClient) acquireSem(ctx context.Context) error {
+	select {
+	case c.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *CDPClient) acquireSemBlocking() {
+	c.sem <- struct{}{}
+}
+
+func (c *CDPClient) releaseSem() {
+	<-c.sem
 }
 
 func (c *CDPClient) httpBaseURL() string {
@@ -102,8 +119,10 @@ func (c *CDPClient) discoverPageTarget(ctx context.Context) (string, error) {
 }
 
 func (c *CDPClient) Connect(ctx context.Context) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquireSem(ctx); err != nil {
+		return err
+	}
+	defer c.releaseSem()
 
 	if c.conn != nil {
 		c.conn.Close()
@@ -138,8 +157,10 @@ func (c *CDPClient) Connect(ctx context.Context) error {
 }
 
 func (c *CDPClient) Evaluate(ctx context.Context, expression string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquireSem(ctx); err != nil {
+		return "", fmt.Errorf("CDP lock cancelled: %w", err)
+	}
+	defer c.releaseSem()
 
 	if c.conn == nil {
 		return "", fmt.Errorf("CDP not connected")
@@ -368,8 +389,10 @@ func (c *CDPClient) BatchFetch(ctx context.Context, apiPaths []string) ([]BatchR
 }
 
 func (c *CDPClient) ConnectToURL(ctx context.Context, wsURL string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquireSem(ctx); err != nil {
+		return err
+	}
+	defer c.releaseSem()
 
 	if c.conn != nil {
 		c.conn.Close()
@@ -399,8 +422,10 @@ func (c *CDPClient) ConnectToURL(ctx context.Context, wsURL string) error {
 }
 
 func (c *CDPClient) CreateTarget(ctx context.Context, targetURL string) (string, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquireSem(ctx); err != nil {
+		return "", err
+	}
+	defer c.releaseSem()
 
 	if c.conn == nil {
 		return "", fmt.Errorf("CDP not connected")
@@ -457,8 +482,10 @@ func (c *CDPClient) CreateTarget(ctx context.Context, targetURL string) (string,
 }
 
 func (c *CDPClient) Navigate(ctx context.Context, pageURL string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if err := c.acquireSem(ctx); err != nil {
+		return err
+	}
+	defer c.releaseSem()
 
 	if c.conn == nil {
 		return fmt.Errorf("CDP not connected")
@@ -512,8 +539,8 @@ func (c *CDPClient) DiscoverPageTarget(ctx context.Context) (string, error) {
 }
 
 func (c *CDPClient) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.acquireSemBlocking()
+	defer c.releaseSem()
 	if c.conn != nil {
 		err := c.conn.Close()
 		c.conn = nil
@@ -523,7 +550,12 @@ func (c *CDPClient) Close() error {
 }
 
 func (c *CDPClient) IsConnected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conn != nil
+	select {
+	case c.sem <- struct{}{}:
+		connected := c.conn != nil
+		c.releaseSem()
+		return connected
+	default:
+		return true
+	}
 }
