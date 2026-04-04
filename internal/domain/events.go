@@ -14,3 +14,4 @@ type EventsResult struct {
 	Days       []EventDay `json:"days"`
 	AllEvents  []string   `json:"all_events"`
 }
+

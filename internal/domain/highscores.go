@@ -32,6 +32,16 @@ type HighscoresResult struct {
 	AvailableSeasons []int         `json:"available_seasons,omitempty"`
 }
 
+type HighscoresCategoryEntry struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Slug string `json:"slug"`
+}
+
+type HighscoreCategoriesResult struct {
+	Categories []HighscoresCategoryEntry `json:"categories"`
+}
+
 type HighscoresByWorldResult struct {
 	World        string             `json:"world"`
 	Category     string             `json:"category"`

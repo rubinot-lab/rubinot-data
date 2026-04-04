@@ -200,6 +200,22 @@ var (
 			Help: "Total CDP tab reconnection attempts",
 		},
 	)
+
+	UpstreamSchemaDrift = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "rubinotdata_upstream_schema_drift",
+			Help: "0=match, 1=new fields detected, -1=fields missing",
+		},
+		[]string{"endpoint"},
+	)
+
+	UpstreamSchemaNewFieldsCount = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "rubinotdata_upstream_schema_new_fields_count",
+			Help: "Number of new fields detected in upstream response",
+		},
+		[]string{"endpoint"},
+	)
 )
 
 func init() {
@@ -231,5 +247,7 @@ func init() {
 		SingleflightDedup,
 		CDPPoolAvailable,
 		CDPPoolRebuilds,
+		UpstreamSchemaDrift,
+		UpstreamSchemaNewFieldsCount,
 	)
 }
