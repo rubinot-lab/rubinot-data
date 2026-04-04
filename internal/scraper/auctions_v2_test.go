@@ -23,8 +23,8 @@ func TestMapV2AuctionDetailResponse(t *testing.T) {
 		"gems": [],
 		"bosstiaries": [{"id": 1, "name": "Orshabaal", "kills": 5, "gained1": 1, "gained2": 0, "gained3": 0}],
 		"bosstiariosTotal": 1,
-		"weaponProficiency": [{"itemId": 1, "experience": 5000, "weaponLevel": 3, "masteryAchieved": false, "activePerks": 1}],
-		"battlepassSeasons": [{"season": 1, "points": 500, "active": true, "shoppoints": 100, "steps": 10}],
+		"weaponProficiency": [{"itemId": 1, "experience": 5000, "weaponLevel": 3, "masteryAchieved": false, "activePerks": [{"lane": 0, "index": 1}, {"lane": 1, "index": 0}]}],
+		"battlepassSeasons": [{"season": 1, "points": 500, "active": 1, "shoppoints": 100, "steps": []}],
 		"achievements": [{"id": 1, "unlockedAt": 1700000000}],
 		"bountyTalismans": [{"type": 1, "level": 2, "effectValue": 10}],
 		"bountyPoints": 100,
@@ -355,8 +355,11 @@ func TestMapV2AuctionDetailResponse(t *testing.T) {
 	if result.WeaponProficiency[0].MasteryAchieved != false {
 		t.Errorf("WeaponProficiency[0].MasteryAchieved = %v, want false", result.WeaponProficiency[0].MasteryAchieved)
 	}
-	if result.WeaponProficiency[0].ActivePerks != 1 {
-		t.Errorf("WeaponProficiency[0].ActivePerks = %d, want 1", result.WeaponProficiency[0].ActivePerks)
+	if len(result.WeaponProficiency[0].ActivePerks) != 2 {
+		t.Errorf("WeaponProficiency[0].ActivePerks len = %d, want 2", len(result.WeaponProficiency[0].ActivePerks))
+	}
+	if result.WeaponProficiency[0].ActivePerks[0].Lane != 0 || result.WeaponProficiency[0].ActivePerks[0].Index != 1 {
+		t.Errorf("WeaponProficiency[0].ActivePerks[0] = %+v", result.WeaponProficiency[0].ActivePerks[0])
 	}
 
 	if len(result.BattlepassSeasons) != 1 {
@@ -368,14 +371,14 @@ func TestMapV2AuctionDetailResponse(t *testing.T) {
 	if result.BattlepassSeasons[0].Points != 500 {
 		t.Errorf("BattlepassSeasons[0].Points = %d, want 500", result.BattlepassSeasons[0].Points)
 	}
-	if result.BattlepassSeasons[0].Active != true {
-		t.Errorf("BattlepassSeasons[0].Active = %v, want true", result.BattlepassSeasons[0].Active)
+	if result.BattlepassSeasons[0].Active != 1 {
+		t.Errorf("BattlepassSeasons[0].Active = %d, want 1", result.BattlepassSeasons[0].Active)
 	}
 	if result.BattlepassSeasons[0].ShopPoints != 100 {
 		t.Errorf("BattlepassSeasons[0].ShopPoints = %d, want 100", result.BattlepassSeasons[0].ShopPoints)
 	}
-	if result.BattlepassSeasons[0].Steps != 10 {
-		t.Errorf("BattlepassSeasons[0].Steps = %d, want 10", result.BattlepassSeasons[0].Steps)
+	if len(result.BattlepassSeasons[0].Steps) != 0 {
+		t.Errorf("BattlepassSeasons[0].Steps len = %d, want 0", len(result.BattlepassSeasons[0].Steps))
 	}
 
 	if len(result.Achievements) != 1 {

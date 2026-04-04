@@ -198,18 +198,18 @@ type v2AuctionDetailAPIResponse struct {
 	} `json:"bosstiaries"`
 	BosstiariosTotal  int `json:"bosstiariosTotal"`
 	WeaponProficiency []struct {
-		ItemID          int  `json:"itemId"`
-		Experience      int  `json:"experience"`
-		WeaponLevel     int  `json:"weaponLevel"`
-		MasteryAchieved bool `json:"masteryAchieved"`
-		ActivePerks     int  `json:"activePerks"`
+		ItemID          int             `json:"itemId"`
+		Experience      int             `json:"experience"`
+		WeaponLevel     int             `json:"weaponLevel"`
+		MasteryAchieved bool            `json:"masteryAchieved"`
+		ActivePerks     json.RawMessage `json:"activePerks"`
 	} `json:"weaponProficiency"`
 	BattlepassSeasons []struct {
-		Season     int  `json:"season"`
-		Points     int  `json:"points"`
-		Active     bool `json:"active"`
-		ShopPoints int  `json:"shoppoints"`
-		Steps      int  `json:"steps"`
+		Season     int             `json:"season"`
+		Points     int             `json:"points"`
+		Active     flexInt         `json:"active"`
+		ShopPoints int             `json:"shoppoints"`
+		Steps      json.RawMessage `json:"steps"`
 	} `json:"battlepassSeasons"`
 	Achievements []struct {
 		ID         int   `json:"id"`
@@ -306,16 +306,20 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 
 	weaponProf := make([]domain.V2AuctionWeaponProf, 0, len(p.WeaponProficiency))
 	for _, w := range p.WeaponProficiency {
+		var perks []domain.V2AuctionWeaponPerk
+		_ = json.Unmarshal(w.ActivePerks, &perks)
 		weaponProf = append(weaponProf, domain.V2AuctionWeaponProf{
 			ItemID: w.ItemID, Experience: w.Experience, WeaponLevel: w.WeaponLevel,
-			MasteryAchieved: w.MasteryAchieved, ActivePerks: w.ActivePerks,
+			MasteryAchieved: w.MasteryAchieved, ActivePerks: perks,
 		})
 	}
 
 	battlepass := make([]domain.V2AuctionBattlepass, 0, len(p.BattlepassSeasons))
 	for _, b := range p.BattlepassSeasons {
+		var steps []domain.V2AuctionBattlepassStep
+		_ = json.Unmarshal(b.Steps, &steps)
 		battlepass = append(battlepass, domain.V2AuctionBattlepass{
-			Season: b.Season, Points: b.Points, Active: b.Active, ShopPoints: b.ShopPoints, Steps: b.Steps,
+			Season: b.Season, Points: b.Points, Active: int(b.Active), ShopPoints: b.ShopPoints, Steps: steps,
 		})
 	}
 

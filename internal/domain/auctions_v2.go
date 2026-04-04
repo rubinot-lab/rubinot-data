@@ -173,20 +173,30 @@ type V2AuctionBosstiary struct {
 	Gained3 int    `json:"gained3"`
 }
 
+type V2AuctionWeaponPerk struct {
+	Lane  int `json:"lane"`
+	Index int `json:"index"`
+}
+
 type V2AuctionWeaponProf struct {
-	ItemID          int  `json:"item_id"`
-	Experience      int  `json:"experience"`
-	WeaponLevel     int  `json:"weapon_level"`
-	MasteryAchieved bool `json:"mastery_achieved"`
-	ActivePerks     int  `json:"active_perks"`
+	ItemID          int                  `json:"item_id"`
+	Experience      int                  `json:"experience"`
+	WeaponLevel     int                  `json:"weapon_level"`
+	MasteryAchieved bool                 `json:"mastery_achieved"`
+	ActivePerks     []V2AuctionWeaponPerk `json:"active_perks"`
+}
+
+type V2AuctionBattlepassStep struct {
+	ID       int  `json:"id,omitempty"`
+	Unlocked bool `json:"unlocked,omitempty"`
 }
 
 type V2AuctionBattlepass struct {
-	Season     int  `json:"season"`
-	Points     int  `json:"points"`
-	Active     bool `json:"active"`
-	ShopPoints int  `json:"shoppoints"`
-	Steps      int  `json:"steps"`
+	Season     int                       `json:"season"`
+	Points     int                       `json:"points"`
+	Active     int                       `json:"active"`
+	ShopPoints int                       `json:"shoppoints"`
+	Steps      []V2AuctionBattlepassStep `json:"steps"`
 }
 
 type V2AuctionAchievement struct {
