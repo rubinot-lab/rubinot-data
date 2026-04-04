@@ -61,6 +61,17 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 			if fetchErr != nil {
 				lastErr = fetchErr
 				CDPFetchRequests.WithLabelValues("error").Inc()
+
+				errMsg := fetchErr.Error()
+				if strings.Contains(errMsg, "HTTP 403") && strings.Contains(errMsg, "Just a moment") {
+					CDPFetchRequests.WithLabelValues("cf_challenge").Inc()
+					log.Printf("[cdp-pool] Cloudflare 403 detected on fetch for %s, re-warming FlareSolverr session", cacheKey)
+					if warmErr := f.pool.warmFlareSolverrSession(ctx); warmErr != nil {
+						log.Printf("[cdp-pool] FlareSolverr re-warm failed: %v", warmErr)
+					}
+					time.Sleep(2 * time.Second)
+				}
+
 				if attempt < maxFetchRetries-1 {
 					log.Printf("[retry] FetchJSON attempt %d/%d failed for %s: %v", attempt+1, maxFetchRetries, cacheKey, fetchErr)
 					select {
@@ -79,6 +90,15 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 				if len(preview) > 200 {
 					preview = preview[:200]
 				}
+
+				if strings.Contains(trimmed, "Just a moment") || strings.Contains(trimmed, "cf-browser-verification") {
+					CDPFetchRequests.WithLabelValues("cf_challenge").Inc()
+					log.Printf("[cdp-pool] Cloudflare challenge detected on fetch for %s, re-warming FlareSolverr session", cacheKey)
+					if warmErr := f.pool.warmFlareSolverrSession(ctx); warmErr != nil {
+						log.Printf("[cdp-pool] FlareSolverr re-warm failed: %v", warmErr)
+					}
+				}
+
 				lastErr = fmt.Errorf("CDP returned non-JSON response for %s: %s", cacheKey, preview)
 				if attempt < maxFetchRetries-1 {
 					log.Printf("[retry] FetchJSON attempt %d/%d non-JSON for %s: %s", attempt+1, maxFetchRetries, cacheKey, preview)
