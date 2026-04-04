@@ -8,15 +8,40 @@ import (
 	"github.com/giovannirco/rubinot-data/internal/domain"
 )
 
-func jsonNumberToInt64(n json.Number) int64 {
-	if v, err := n.Int64(); err == nil {
-		return v
+type flexInt int
+
+func (fi *flexInt) UnmarshalJSON(b []byte) error {
+	var n int
+	if err := json.Unmarshal(b, &n); err == nil {
+		*fi = flexInt(n)
+		return nil
 	}
-	if s := n.String(); s != "" {
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
+		v, _ := strconv.Atoi(s)
+		*fi = flexInt(v)
+		return nil
+	}
+	*fi = 0
+	return nil
+}
+
+type flexInt64 int64
+
+func (fi *flexInt64) UnmarshalJSON(b []byte) error {
+	var n int64
+	if err := json.Unmarshal(b, &n); err == nil {
+		*fi = flexInt64(n)
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(b, &s); err == nil {
 		v, _ := strconv.ParseInt(s, 10, 64)
-		return v
+		*fi = flexInt64(v)
+		return nil
 	}
-	return 0
+	*fi = 0
+	return nil
 }
 
 type v2AuctionDetailAPIResponse struct {
@@ -54,11 +79,11 @@ type v2AuctionDetailAPIResponse struct {
 		HealthMax            int   `json:"healthMax"`
 		Mana                 int   `json:"mana"`
 		ManaMax              int   `json:"manaMax"`
-		ManaSpent            json.Number `json:"manaSpent"`
+		ManaSpent            flexInt64 `json:"manaSpent"`
 		Cap                  int         `json:"cap"`
 		Stamina              int         `json:"stamina"`
 		Soul                 int         `json:"soul"`
-		Experience           json.Number `json:"experience"`
+		Experience           flexInt64 `json:"experience"`
 		MagLevel             int   `json:"magLevel"`
 		Skills               struct {
 			Axe       int `json:"axe"`
@@ -76,8 +101,8 @@ type v2AuctionDetailAPIResponse struct {
 		TitlesCount          int   `json:"titlesCount"`
 		LinkedTasks          int   `json:"linkedTasks"`
 		CreateDate           int64 `json:"createDate"`
-		Balance              json.Number `json:"balance"`
-		TotalMoney           json.Number `json:"totalMoney"`
+		Balance              flexInt64 `json:"balance"`
+		TotalMoney           flexInt64 `json:"totalMoney"`
 		AchievementPoints    int   `json:"achievementPoints"`
 		CharmPoints          int   `json:"charmPoints"`
 		SpentCharmPoints     int   `json:"spentCharmPoints"`
@@ -139,10 +164,10 @@ type v2AuctionDetailAPIResponse struct {
 		ClientID int    `json:"clientId"`
 	} `json:"familiars"`
 	Charms []struct {
-		ID     int `json:"id"`
-		Tier   int `json:"tier"`
-		RaceID int `json:"raceId"`
-		Type   int `json:"type"`
+		ID     flexInt `json:"id"`
+		Tier   flexInt `json:"tier"`
+		RaceID flexInt `json:"raceId"`
+		Type   flexInt `json:"type"`
 	} `json:"charms"`
 	Blessings []struct {
 		Name  string `json:"name"`
@@ -182,9 +207,9 @@ type v2AuctionDetailAPIResponse struct {
 		UnlockedAt int64 `json:"unlockedAt"`
 	} `json:"achievements"`
 	BountyTalismans []struct {
-		Type        int `json:"type"`
-		Level       int `json:"level"`
-		EffectValue int `json:"effectValue"`
+		Type        flexInt `json:"type"`
+		Level       flexInt `json:"level"`
+		EffectValue flexInt `json:"effectValue"`
 	} `json:"bountyTalismans"`
 	BountyPoints      int `json:"bountyPoints"`
 	TotalBountyPoints int `json:"totalBountyPoints"`
@@ -250,7 +275,7 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 
 	charms := make([]domain.V2AuctionCharm, 0, len(p.Charms))
 	for _, ch := range p.Charms {
-		charms = append(charms, domain.V2AuctionCharm{ID: ch.ID, Tier: ch.Tier, RaceID: ch.RaceID, Type: ch.Type})
+		charms = append(charms, domain.V2AuctionCharm{ID: int(ch.ID), Tier: int(ch.Tier), RaceID: int(ch.RaceID), Type: int(ch.Type)})
 	}
 
 	blessings := make([]domain.V2AuctionBlessing, 0, len(p.Blessings))
@@ -293,7 +318,7 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 	bountyTalismans := make([]domain.V2AuctionBountyTalisman, 0, len(p.BountyTalismans))
 	for _, b := range p.BountyTalismans {
 		bountyTalismans = append(bountyTalismans, domain.V2AuctionBountyTalisman{
-			Type: b.Type, Level: b.Level, EffectValue: b.EffectValue,
+			Type: int(b.Type), Level: int(b.Level), EffectValue: int(b.EffectValue),
 		})
 	}
 
@@ -361,9 +386,9 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 		General: domain.V2AuctionGeneral{
 			Health: p.General.Health, HealthMax: p.General.HealthMax,
 			Mana: p.General.Mana, ManaMax: p.General.ManaMax,
-			ManaSpent: jsonNumberToInt64(p.General.ManaSpent), Cap: p.General.Cap,
+			ManaSpent: int64(p.General.ManaSpent), Cap: p.General.Cap,
 			Stamina: p.General.Stamina, Soul: p.General.Soul,
-			Experience: jsonNumberToInt64(p.General.Experience), MagLevel: p.General.MagLevel,
+			Experience: int64(p.General.Experience), MagLevel: p.General.MagLevel,
 			Skills: domain.AuctionSkills{
 				Axe: p.General.Skills.Axe, Club: p.General.Skills.Club,
 				Sword: p.General.Skills.Sword, Distance: distSkill,
@@ -373,7 +398,7 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 			MountsCount: p.General.MountsCount, OutfitsCount: p.General.OutfitsCount,
 			TitlesCount: p.General.TitlesCount, LinkedTasks: p.General.LinkedTasks,
 			CreateDate: unixSecondsToRFC3339(p.General.CreateDate),
-			Balance: jsonNumberToInt64(p.General.Balance), TotalMoney: jsonNumberToInt64(p.General.TotalMoney),
+			Balance: int64(p.General.Balance), TotalMoney: int64(p.General.TotalMoney),
 			AchievementPoints: p.General.AchievementPoints,
 			CharmPoints: p.General.CharmPoints, SpentCharmPoints: p.General.SpentCharmPoints,
 			AvailableCharmPoints: p.General.AvailableCharmPoints,
