@@ -19,22 +19,31 @@ type cacheEntry struct {
 }
 
 type CachedFetcher struct {
-	pool     *CDPPool
-	group    singleflight.Group
-	cache    sync.Map
-	ttl      time.Duration
-	warmOnce sync.Once
-	warmMu   sync.Mutex
+	pool       *CDPPool
+	group      singleflight.Group
+	cache      sync.Map
+	ttl        time.Duration
+	warmMu     sync.Mutex
+	lastWarmAt time.Time
 }
 
 func NewCachedFetcher(pool *CDPPool, ttl time.Duration) *CachedFetcher {
 	return &CachedFetcher{pool: pool, ttl: ttl}
 }
 
+const reWarmCooldown = 5 * time.Minute
+
 func (f *CachedFetcher) triggerReWarm() {
 	if !f.warmMu.TryLock() {
 		return
 	}
+
+	if time.Since(f.lastWarmAt) < reWarmCooldown {
+		f.warmMu.Unlock()
+		log.Printf("[cdp-pool] skipping re-warm, last warm was %s ago (cooldown %s)", time.Since(f.lastWarmAt).Round(time.Second), reWarmCooldown)
+		return
+	}
+
 	go func() {
 		defer f.warmMu.Unlock()
 		warmCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -43,9 +52,14 @@ func (f *CachedFetcher) triggerReWarm() {
 		if err := f.pool.warmFlareSolverrSession(warmCtx); err != nil {
 			log.Printf("[cdp-pool] background re-warm failed: %v", err)
 		} else {
+			f.lastWarmAt = time.Now()
 			log.Printf("[cdp-pool] background re-warm succeeded")
 		}
 	}()
+}
+
+func (f *CachedFetcher) SetLastWarmAt(t time.Time) {
+	f.lastWarmAt = t
 }
 
 func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, error) {

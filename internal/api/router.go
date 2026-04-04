@@ -250,6 +250,7 @@ func initOptimizedClient(ctx context.Context) (*scraper.OptimizedClient, error) 
 	}
 	cacheTTLSeconds := getEnvInt("CDP_CACHE_TTL_SECONDS", 5)
 	fetcher := scraper.NewCachedFetcher(pool, time.Duration(cacheTTLSeconds)*time.Second)
+	fetcher.SetLastWarmAt(time.Now())
 	return scraper.NewOptimizedClient(fetcher), nil
 }
 
