@@ -23,13 +23,13 @@ type CDPPool struct {
 	size            int
 }
 
-func NewCDPPool(cdpURL, siteURL string, size int) *CDPPool {
+func NewCDPPool(cdpURL, siteURL string, _ int) *CDPPool {
 	return &CDPPool{
 		cdpURL:          strings.TrimRight(cdpURL, "/"),
 		siteURL:         strings.TrimRight(siteURL, "/"),
 		flareSolverrURL: os.Getenv("FLARESOLVERR_URL"),
-		size:            size,
-		available:        make(chan int, size),
+		size:            1,
+		available:        make(chan int, 1),
 	}
 }
 
@@ -109,15 +109,7 @@ func (p *CDPPool) Init(ctx context.Context) error {
 	p.tabs[0] = tab0
 	p.available <- 0
 
-	for i := 1; i < p.size; i++ {
-		tab, err := p.createTab(ctx, tab0, i)
-		if err != nil {
-			return err
-		}
-		p.tabs[i] = tab
-		p.available <- i
-	}
-
+	log.Printf("[cdp-pool] initialized with 1 tab (FlareSolverr-cleared tab only)")
 	return nil
 }
 
@@ -177,25 +169,21 @@ func (p *CDPPool) rebuildTab(ctx context.Context, idx int) (*CDPClient, error) {
 		p.tabs[idx].Close()
 	}
 
-	var creator *CDPClient
-	for _, t := range p.tabs {
-		if t != nil && t.IsConnected() {
-			creator = t
-			break
-		}
+	log.Printf("[cdp-pool] rebuilding tab %d — reconnecting to FlareSolverr tab", idx)
+
+	if err := p.warmFlareSolverrSession(ctx); err != nil {
+		log.Printf("[cdp-pool] FlareSolverr warm during rebuild failed: %v", err)
 	}
 
-	if creator == nil {
-		recovered, err := p.recoverBaseTab(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("pool recovery failed: %w", err)
-		}
-		creator = recovered
-	}
-
-	tab, err := p.createTab(ctx, creator, idx)
+	discovery := NewCDPClient(p.cdpURL)
+	wsURL, err := discovery.DiscoverPageTarget(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("discover page target for rebuild: %w", err)
+	}
+
+	tab := NewCDPClient(p.cdpURL)
+	if err := tab.ConnectToURL(ctx, wsURL); err != nil {
+		return nil, fmt.Errorf("connect rebuilt tab: %w", err)
 	}
 
 	p.tabs[idx] = tab
