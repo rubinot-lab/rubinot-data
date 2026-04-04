@@ -77,6 +77,33 @@ func registerV2Routes(router *gin.Engine, oc *scraper.OptimizedClient) {
 		v2.GET("/auctions/:id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return v2GetAuctionDetail(c, oc)
 		}))
+		v2.GET("/auctions/:id/full", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetV2AuctionDetail(c, oc)
+		}))
+		v2.GET("/auctions/current/:page/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetCurrentAuctionDetails(c, oc)
+		}))
+		v2.GET("/auctions/history/:page/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetAuctionHistoryDetails(c, oc)
+		}))
+		v2.POST("/characters/batch", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2PostCharactersBatch(c, oc)
+		}))
+		v2.POST("/guilds/batch", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2PostGuildsBatch(c, oc)
+		}))
+		v2.POST("/killstatistics/batch", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2PostKillstatisticsBatch(c, getValidator(), oc)
+		}))
+		v2.GET("/guilds/:world/all/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetAllGuildsDetails(c, getValidator(), oc)
+		}))
+		v2.GET("/events/calendar", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetEventsCalendar(c, oc)
+		}))
+		v2.GET("/highscores/categories", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetHighscoreCategories(c, oc)
+		}))
 		v2.GET("/news/id/:news_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return v2GetNewsByID(c, oc)
 		}))

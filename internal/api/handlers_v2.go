@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -816,6 +817,138 @@ func v2GetUpstreamRaw(c *gin.Context, oc *scraper.OptimizedClient) (endpointResu
 	}
 
 	return endpointResult{PayloadKey: "upstream", Payload: raw, Sources: []string{sourceURL}}, nil
+}
+
+func v2PostCharactersBatch(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	var req struct {
+		Names []string `json:"names"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "invalid batch request", err)
+	}
+	if len(req.Names) == 0 || len(req.Names) > 500 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names must be 1-500", nil)
+	}
+	results, sources, err := scraper.V2FetchCharactersBatch(c.Request.Context(), oc, resolvedBaseURL, req.Names)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{PayloadKey: "characters", Payload: results, Sources: sources}, nil
+}
+
+func v2GetAllGuildsDetails(c *gin.Context, validator *validation.Validator, oc *scraper.OptimizedClient) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
+	if !worldOK {
+		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	}
+	result, sources, err := scraper.V2FetchAllGuildsDetails(c.Request.Context(), oc, resolvedBaseURL, canonicalWorld, worldID)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{PayloadKey: "guilds", Payload: result, Sources: sources}, nil
+}
+
+func v2GetEventsCalendar(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	result, sourceURL, err := scraper.V2FetchEventsCalendar(c.Request.Context(), oc, resolvedBaseURL)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{PayloadKey: "events", Payload: result, Sources: []string{sourceURL}}, nil
+}
+
+func v2GetHighscoreCategories(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	result, sourceURL, err := scraper.V2FetchHighscoreCategories(c.Request.Context(), oc, resolvedBaseURL)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{PayloadKey: "categories", Payload: result, Sources: []string{sourceURL}}, nil
+}
+
+func v2GetCurrentAuctionDetails(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	page, err := strconv.Atoi(c.Param("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+	result, sourceURL, fetchErr := scraper.V2FetchCurrentAuctionDetails(c.Request.Context(), oc, resolvedBaseURL, page)
+	if fetchErr != nil {
+		return endpointResult{Sources: []string{sourceURL}}, fetchErr
+	}
+	return endpointResult{PayloadKey: "auctions", Payload: result, Sources: []string{sourceURL}}, nil
+}
+
+func v2GetAuctionHistoryDetails(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	page, err := strconv.Atoi(c.Param("page"))
+	if err != nil || page < 1 {
+		page = 1
+	}
+	result, sourceURL, fetchErr := scraper.V2FetchAuctionHistoryDetails(c.Request.Context(), oc, resolvedBaseURL, page)
+	if fetchErr != nil {
+		return endpointResult{Sources: []string{sourceURL}}, fetchErr
+	}
+	return endpointResult{PayloadKey: "auctions", Payload: result, Sources: []string{sourceURL}}, nil
+}
+
+func v2GetV2AuctionDetail(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	auctionID, err := validation.ParseAuctionID(c.Param("id"))
+	if err != nil {
+		return endpointResult{}, err
+	}
+	result, sourceURL, fetchErr := scraper.V2FetchV2AuctionDetail(c.Request.Context(), oc, resolvedBaseURL, auctionID)
+	if fetchErr != nil {
+		return endpointResult{Sources: []string{sourceURL}}, fetchErr
+	}
+	return endpointResult{PayloadKey: "auction", Payload: result, Sources: []string{sourceURL}}, nil
+}
+
+func v2PostGuildsBatch(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	var req struct {
+		Names []string `json:"names"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "invalid batch request", err)
+	}
+	if len(req.Names) == 0 || len(req.Names) > 200 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names must be 1-200", nil)
+	}
+	results, sources, err := scraper.V2FetchGuildsBatch(c.Request.Context(), oc, resolvedBaseURL, req.Names)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{PayloadKey: "guilds", Payload: results, Sources: sources}, nil
+}
+
+func v2PostKillstatisticsBatch(c *gin.Context, validator *validation.Validator, oc *scraper.OptimizedClient) (endpointResult, error) {
+	var req struct {
+		WorldIDs []int `json:"world_ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "invalid batch request", err)
+	}
+	if len(req.WorldIDs) == 0 || len(req.WorldIDs) > 50 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "world_ids must be 1-50", nil)
+	}
+
+	allWorlds := validator.AllWorlds()
+	worldsByID := make(map[int]validation.World, len(allWorlds))
+	for _, w := range allWorlds {
+		worldsByID[w.ID] = w
+	}
+
+	worlds := make([]validation.World, 0, len(req.WorldIDs))
+	for _, id := range req.WorldIDs {
+		w, ok := worldsByID[id]
+		if !ok {
+			return endpointResult{}, validation.NewError(validation.ErrorWorldIDDoesNotExist, fmt.Sprintf("world_id %d does not exist", id), nil)
+		}
+		worlds = append(worlds, w)
+	}
+
+	results, sources, err := scraper.V2FetchKillstatisticsBatchDirect(c.Request.Context(), oc, resolvedBaseURL, worlds)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{PayloadKey: "killstatistics", Payload: results, Sources: sources}, nil
 }
 
 func normalizeSchemaKey(apiPath string) string {
