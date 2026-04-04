@@ -1,31 +1,90 @@
 package scraper
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"log"
+	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 type CDPPool struct {
-	mu        sync.Mutex
-	tabs      []*CDPClient
-	available chan int
-	cdpURL    string
-	siteURL   string
-	size      int
+	mu              sync.Mutex
+	tabs            []*CDPClient
+	available       chan int
+	cdpURL          string
+	siteURL         string
+	flareSolverrURL string
+	size            int
 }
 
 func NewCDPPool(cdpURL, siteURL string, size int) *CDPPool {
 	return &CDPPool{
-		cdpURL:    strings.TrimRight(cdpURL, "/"),
-		siteURL:   strings.TrimRight(siteURL, "/"),
-		size:      size,
-		available: make(chan int, size),
+		cdpURL:          strings.TrimRight(cdpURL, "/"),
+		siteURL:         strings.TrimRight(siteURL, "/"),
+		flareSolverrURL: os.Getenv("FLARESOLVERR_URL"),
+		size:            size,
+		available:        make(chan int, size),
 	}
 }
 
+func (p *CDPPool) warmFlareSolverrSession(ctx context.Context) error {
+	if p.flareSolverrURL == "" {
+		return nil
+	}
+
+	createBody, _ := json.Marshal(map[string]string{
+		"cmd":     "sessions.create",
+		"session": "rubinot-cdp",
+	})
+	req, err := http.NewRequestWithContext(ctx, "POST", p.flareSolverrURL, bytes.NewReader(createBody))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("flaresolverr session create: %w", err)
+	}
+	resp.Body.Close()
+
+	warmBody, _ := json.Marshal(map[string]interface{}{
+		"cmd":               "request.get",
+		"url":               p.siteURL + "/",
+		"session":           "rubinot-cdp",
+		"maxTimeout":        120000,
+		"disableMedia":      true,
+		"session_ttl_minutes": 30,
+	})
+	req2, err := http.NewRequestWithContext(ctx, "POST", p.flareSolverrURL, bytes.NewReader(warmBody))
+	if err != nil {
+		return err
+	}
+	req2.Header.Set("Content-Type", "application/json")
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		return fmt.Errorf("flaresolverr session warm: %w", err)
+	}
+	resp2.Body.Close()
+
+	log.Printf("[cdp-pool] FlareSolverr session warmed for %s", p.siteURL)
+	return nil
+}
+
 func (p *CDPPool) Init(ctx context.Context) error {
+	if err := p.warmFlareSolverrSession(ctx); err != nil {
+		log.Printf("[cdp-pool] FlareSolverr warm failed (will retry): %v", err)
+		time.Sleep(3 * time.Second)
+		if err2 := p.warmFlareSolverrSession(ctx); err2 != nil {
+			return fmt.Errorf("FlareSolverr session warm failed: %w", err2)
+		}
+	}
+
 	discovery := NewCDPClient(p.cdpURL)
 	defaultWSURL, err := discovery.DiscoverPageTarget(ctx)
 	if err != nil {
@@ -138,6 +197,10 @@ func (p *CDPPool) rebuildTab(ctx context.Context, idx int) (*CDPClient, error) {
 }
 
 func (p *CDPPool) recoverBaseTab(ctx context.Context) (*CDPClient, error) {
+	if err := p.warmFlareSolverrSession(ctx); err != nil {
+		log.Printf("[cdp-pool] FlareSolverr warm during recovery failed: %v", err)
+	}
+
 	discovery := NewCDPClient(p.cdpURL)
 	wsURL, err := discovery.DiscoverPageTarget(ctx)
 	if err != nil {
