@@ -69,6 +69,10 @@ func NewRouter() (*gin.Engine, error) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 	router.GET("/readyz", func(c *gin.Context) {
+		if oc != nil && !oc.Fetcher.IsReady() {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not_ready", "reason": "cloudflare_rewarming"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
 	router.GET("/versions", func(c *gin.Context) {

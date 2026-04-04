@@ -6,6 +6,7 @@ import (
 	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/singleflight"
@@ -25,15 +26,22 @@ type CachedFetcher struct {
 	ttl        time.Duration
 	warmMu     sync.Mutex
 	lastWarmAt time.Time
+	cfBlocked  atomic.Bool
 }
 
 func NewCachedFetcher(pool *CDPPool, ttl time.Duration) *CachedFetcher {
 	return &CachedFetcher{pool: pool, ttl: ttl}
 }
 
+func (f *CachedFetcher) IsReady() bool {
+	return !f.cfBlocked.Load()
+}
+
 const reWarmCooldown = 90 * time.Second
 
 func (f *CachedFetcher) triggerReWarm() {
+	f.cfBlocked.Store(true)
+
 	if !f.warmMu.TryLock() {
 		return
 	}
@@ -48,12 +56,13 @@ func (f *CachedFetcher) triggerReWarm() {
 		defer f.warmMu.Unlock()
 		warmCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 		defer cancel()
-		log.Printf("[cdp-pool] triggering background FlareSolverr re-warm")
+		log.Printf("[cdp-pool] triggering background FlareSolverr re-warm (pod marked not-ready)")
 		if err := f.pool.warmFlareSolverrSession(warmCtx); err != nil {
 			log.Printf("[cdp-pool] background re-warm failed: %v", err)
 		} else {
 			f.lastWarmAt = time.Now()
-			log.Printf("[cdp-pool] background re-warm succeeded")
+			f.cfBlocked.Store(false)
+			log.Printf("[cdp-pool] background re-warm succeeded (pod marked ready)")
 		}
 	}()
 }
