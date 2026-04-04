@@ -1,9 +1,11 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/giovannirco/rubinot-data/internal/validation"
@@ -19,6 +21,11 @@ type endpointHandler func(c *gin.Context) (endpointResult, error)
 
 func handleEndpoint(handler endpointHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		timeout := time.Duration(resolvedOpts.MaxTimeoutMs) * time.Millisecond
+		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
+		defer cancel()
+		c.Request = c.Request.WithContext(ctx)
+
 		result, err := handler(c)
 		if err != nil {
 			errorCode := resolveErrorCode(err)
