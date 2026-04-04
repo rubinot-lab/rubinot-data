@@ -31,7 +31,7 @@ func NewCachedFetcher(pool *CDPPool, ttl time.Duration) *CachedFetcher {
 	return &CachedFetcher{pool: pool, ttl: ttl}
 }
 
-const reWarmCooldown = 5 * time.Minute
+const reWarmCooldown = 90 * time.Second
 
 func (f *CachedFetcher) triggerReWarm() {
 	if !f.warmMu.TryLock() {
