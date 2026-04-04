@@ -857,12 +857,13 @@ func v2GetEventsCalendar(c *gin.Context, oc *scraper.OptimizedClient) (endpointR
 	return endpointResult{PayloadKey: "events", Payload: result, Sources: []string{sourceURL}}, nil
 }
 
-func v2GetHighscoreCategories(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
-	result, sourceURL, err := scraper.V2FetchHighscoreCategories(c.Request.Context(), oc, resolvedBaseURL)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-	return endpointResult{PayloadKey: "categories", Payload: result, Sources: []string{sourceURL}}, nil
+func v2GetHighscoreCategories(_ *gin.Context, _ *scraper.OptimizedClient) (endpointResult, error) {
+	validator := getValidator()
+	return endpointResult{
+		PayloadKey: "categories",
+		Payload:    validator.AllCategories(),
+		Sources:    []string{},
+	}, nil
 }
 
 func v2GetCurrentAuctionDetails(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {

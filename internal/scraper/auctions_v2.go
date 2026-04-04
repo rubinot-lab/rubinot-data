@@ -1,10 +1,23 @@
 package scraper
 
 import (
+	"encoding/json"
+	"strconv"
 	"strings"
 
 	"github.com/giovannirco/rubinot-data/internal/domain"
 )
+
+func jsonNumberToInt64(n json.Number) int64 {
+	if v, err := n.Int64(); err == nil {
+		return v
+	}
+	if s := n.String(); s != "" {
+		v, _ := strconv.ParseInt(s, 10, 64)
+		return v
+	}
+	return 0
+}
 
 type v2AuctionDetailAPIResponse struct {
 	Auction struct {
@@ -41,11 +54,11 @@ type v2AuctionDetailAPIResponse struct {
 		HealthMax            int   `json:"healthMax"`
 		Mana                 int   `json:"mana"`
 		ManaMax              int   `json:"manaMax"`
-		ManaSpent            int64 `json:"manaSpent"`
-		Cap                  int   `json:"cap"`
-		Stamina              int   `json:"stamina"`
-		Soul                 int   `json:"soul"`
-		Experience           int64 `json:"experience"`
+		ManaSpent            json.Number `json:"manaSpent"`
+		Cap                  int         `json:"cap"`
+		Stamina              int         `json:"stamina"`
+		Soul                 int         `json:"soul"`
+		Experience           json.Number `json:"experience"`
 		MagLevel             int   `json:"magLevel"`
 		Skills               struct {
 			Axe       int `json:"axe"`
@@ -63,8 +76,8 @@ type v2AuctionDetailAPIResponse struct {
 		TitlesCount          int   `json:"titlesCount"`
 		LinkedTasks          int   `json:"linkedTasks"`
 		CreateDate           int64 `json:"createDate"`
-		Balance              int64 `json:"balance"`
-		TotalMoney           int64 `json:"totalMoney"`
+		Balance              json.Number `json:"balance"`
+		TotalMoney           json.Number `json:"totalMoney"`
 		AchievementPoints    int   `json:"achievementPoints"`
 		CharmPoints          int   `json:"charmPoints"`
 		SpentCharmPoints     int   `json:"spentCharmPoints"`
@@ -348,9 +361,9 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 		General: domain.V2AuctionGeneral{
 			Health: p.General.Health, HealthMax: p.General.HealthMax,
 			Mana: p.General.Mana, ManaMax: p.General.ManaMax,
-			ManaSpent: p.General.ManaSpent, Cap: p.General.Cap,
+			ManaSpent: jsonNumberToInt64(p.General.ManaSpent), Cap: p.General.Cap,
 			Stamina: p.General.Stamina, Soul: p.General.Soul,
-			Experience: p.General.Experience, MagLevel: p.General.MagLevel,
+			Experience: jsonNumberToInt64(p.General.Experience), MagLevel: p.General.MagLevel,
 			Skills: domain.AuctionSkills{
 				Axe: p.General.Skills.Axe, Club: p.General.Skills.Club,
 				Sword: p.General.Skills.Sword, Distance: distSkill,
@@ -360,7 +373,7 @@ func mapV2AuctionDetailResponse(p v2AuctionDetailAPIResponse) domain.V2AuctionDe
 			MountsCount: p.General.MountsCount, OutfitsCount: p.General.OutfitsCount,
 			TitlesCount: p.General.TitlesCount, LinkedTasks: p.General.LinkedTasks,
 			CreateDate: unixSecondsToRFC3339(p.General.CreateDate),
-			Balance: p.General.Balance, TotalMoney: p.General.TotalMoney,
+			Balance: jsonNumberToInt64(p.General.Balance), TotalMoney: jsonNumberToInt64(p.General.TotalMoney),
 			AchievementPoints: p.General.AchievementPoints,
 			CharmPoints: p.General.CharmPoints, SpentCharmPoints: p.General.SpentCharmPoints,
 			AvailableCharmPoints: p.General.AvailableCharmPoints,
