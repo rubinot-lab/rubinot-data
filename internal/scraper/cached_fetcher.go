@@ -19,14 +19,33 @@ type cacheEntry struct {
 }
 
 type CachedFetcher struct {
-	pool  *CDPPool
-	group singleflight.Group
-	cache sync.Map
-	ttl   time.Duration
+	pool     *CDPPool
+	group    singleflight.Group
+	cache    sync.Map
+	ttl      time.Duration
+	warmOnce sync.Once
+	warmMu   sync.Mutex
 }
 
 func NewCachedFetcher(pool *CDPPool, ttl time.Duration) *CachedFetcher {
 	return &CachedFetcher{pool: pool, ttl: ttl}
+}
+
+func (f *CachedFetcher) triggerReWarm() {
+	if !f.warmMu.TryLock() {
+		return
+	}
+	go func() {
+		defer f.warmMu.Unlock()
+		warmCtx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
+		log.Printf("[cdp-pool] triggering background FlareSolverr re-warm")
+		if err := f.pool.warmFlareSolverrSession(warmCtx); err != nil {
+			log.Printf("[cdp-pool] background re-warm failed: %v", err)
+		} else {
+			log.Printf("[cdp-pool] background re-warm succeeded")
+		}
+	}()
 }
 
 func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, error) {
@@ -65,11 +84,9 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 				errMsg := fetchErr.Error()
 				if strings.Contains(errMsg, "HTTP 403") && strings.Contains(errMsg, "Just a moment") {
 					CDPFetchRequests.WithLabelValues("cf_challenge").Inc()
-					log.Printf("[cdp-pool] Cloudflare 403 detected on fetch for %s, re-warming FlareSolverr session", cacheKey)
-					if warmErr := f.pool.warmFlareSolverrSession(ctx); warmErr != nil {
-						log.Printf("[cdp-pool] FlareSolverr re-warm failed: %v", warmErr)
-					}
-					time.Sleep(2 * time.Second)
+					log.Printf("[cdp-pool] Cloudflare 403 detected on fetch for %s", cacheKey)
+					f.triggerReWarm()
+					time.Sleep(3 * time.Second)
 				}
 
 				if attempt < maxFetchRetries-1 {
