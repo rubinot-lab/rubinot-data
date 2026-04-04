@@ -1134,6 +1134,63 @@ func v2FetchAuctionDetailsPage(ctx context.Context, oc *OptimizedClient, baseURL
 	}, listURL, nil
 }
 
+func V2FetchAllCurrentAuctionDetails(ctx context.Context, oc *OptimizedClient, baseURL string) (domain.V2AuctionsDetailsResult, []string, error) {
+	return v2FetchAllAuctionDetails(ctx, oc, baseURL, "current")
+}
+
+func V2FetchAllAuctionHistoryDetails(ctx context.Context, oc *OptimizedClient, baseURL string) (domain.V2AuctionsDetailsResult, []string, error) {
+	return v2FetchAllAuctionDetails(ctx, oc, baseURL, "history")
+}
+
+func v2FetchAllAuctionDetails(ctx context.Context, oc *OptimizedClient, baseURL, auctionType string) (domain.V2AuctionsDetailsResult, []string, error) {
+	allAuctions, allSources, err := v2FetchAllAuctions(ctx, oc, baseURL, auctionType)
+	if err != nil {
+		return domain.V2AuctionsDetailsResult{}, allSources, err
+	}
+
+	if len(allAuctions.Entries) == 0 {
+		return domain.V2AuctionsDetailsResult{
+			Type:         auctionType,
+			Page:         1,
+			TotalResults: allAuctions.TotalResults,
+			TotalPages:   allAuctions.TotalPages,
+		}, allSources, nil
+	}
+
+	base := strings.TrimRight(baseURL, "/")
+	detailURLs := make([]string, len(allAuctions.Entries))
+	for i, a := range allAuctions.Entries {
+		detailURLs[i] = fmt.Sprintf("%s/api/bazaar/%d", base, a.AuctionID)
+	}
+
+	batchBodies, batchErr := oc.BatchFetchJSON(ctx, detailURLs)
+	if batchErr != nil {
+		return domain.V2AuctionsDetailsResult{}, allSources, batchErr
+	}
+
+	entries := make([]domain.V2AuctionDetail, 0, len(allAuctions.Entries))
+	for _, a := range allAuctions.Entries {
+		detailURL := fmt.Sprintf("%s/api/bazaar/%d", base, a.AuctionID)
+		raw, ok := batchBodies[detailURL]
+		if !ok {
+			continue
+		}
+		var detailPayload v2AuctionDetailAPIResponse
+		if err := parseJSONBody(raw, &detailPayload); err != nil {
+			continue
+		}
+		entries = append(entries, mapV2AuctionDetailResponse(detailPayload))
+	}
+
+	return domain.V2AuctionsDetailsResult{
+		Type:         auctionType,
+		Page:         1,
+		TotalResults: allAuctions.TotalResults,
+		TotalPages:   allAuctions.TotalPages,
+		Entries:      entries,
+	}, allSources, nil
+}
+
 const maxPaginatedPages = 50
 
 func v2FetchAllPaginated[T any](

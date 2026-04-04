@@ -2,11 +2,11 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -27,25 +27,32 @@ const (
 )
 
 var (
-	resolvedBaseURL      string
-	resolvedOpts         scraper.FetchOptions
-	resolvedAssetsDir    string
+	resolvedBaseURL        string
+	resolvedAssetsDir      string
 	resolvedRequestTimeout int
-	currentValidator     atomic.Pointer[validation.Validator]
+	currentValidator       atomic.Pointer[validation.Validator]
+	globalOC               *scraper.OptimizedClient
 )
 
 func NewRouter() (*gin.Engine, error) {
 	resolvedBaseURL = getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
-	resolvedOpts = scrapeFetchOptions()
 	resolvedAssetsDir = getEnv("ASSETS_DIR", "assets")
 	resolvedRequestTimeout = getEnvInt("REQUEST_TIMEOUT_MS", defaultRequestTimeoutMS)
 
-	validator, err := bootstrapValidator(context.Background())
+	ctx := context.Background()
+
+	oc, ocErr := initOptimizedClient(ctx)
+	if ocErr != nil {
+		return nil, fmt.Errorf("init optimized client: %w", ocErr)
+	}
+	globalOC = oc
+
+	validator, err := bootstrapValidatorV2(ctx, oc)
 	if err != nil {
 		return nil, err
 	}
 	currentValidator.Store(validator)
-	startValidatorRefresh()
+	startValidatorRefresh(oc)
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -75,58 +82,62 @@ func NewRouter() (*gin.Engine, error) {
 	router.GET("/docs", docsPage)
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
+	registerV2Routes(router, oc)
+	registerV1Routes(router, oc)
+
+	return router, nil
+}
+
+func registerV1Routes(router *gin.Engine, oc *scraper.OptimizedClient) {
 	v1 := router.Group("/v1")
 	{
-		v1.GET("/worlds", handleEndpoint(getWorlds))
+		v1.GET("/worlds", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetWorlds(c, oc)
+		}))
 		v1.GET("/world/:name/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getWorldDetails(c, getValidator())
+			return v2GetWorldDetails(c, getValidator(), oc)
 		}))
 		v1.GET("/world/:name/dashboard", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getWorldDashboard(c, getValidator())
+			return v2GetWorldDashboard(c, getValidator(), oc)
 		}))
 		v1.GET("/world/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getWorld(c, getValidator())
+			return v2GetWorld(c, getValidator(), oc)
 		}))
 		v1.GET("/highscores/categories", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			validator := getValidator()
-			return endpointResult{
-				PayloadKey: "categories",
-				Payload:    validator.AllCategories(),
-				Sources:    []string{},
-			}, nil
+			return v2GetHighscoreCategories(c, oc)
 		}))
 		v1.GET("/highscores/:world", redirectHighscoresWorld)
 		v1.GET("/highscores/:world/:category", redirectHighscoresCategory)
 		v1.GET("/highscores/:world/:category/:vocation", redirectHighscoresVocation)
 		v1.GET("/highscores/:world/:category/:vocation/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllHighscores(c, getValidator())
+			return v1GetAllHighscores(c, getValidator(), oc)
 		}))
 		v1.GET("/highscores/:world/:category/:vocation/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getHighscores(c, getValidator())
+			return v2GetHighscores(c, getValidator(), oc)
 		}))
 		v1.GET("/killstatistics/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getKillstatistics(c, getValidator())
+			return v2GetKillstatistics(c, getValidator(), oc)
 		}))
 		v1.GET("/news/id/:news_id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getNewsByID(c)
+			return v2GetNewsByID(c, oc)
 		}))
 		v1.GET("/news/archive", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getNewsArchive(c)
+			return v2GetNewsArchive(c, oc)
 		}))
 		v1.GET("/news/latest", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getNewsLatest(c)
+			return v2GetNewsLatest(c, oc)
 		}))
 		v1.GET("/news/newsticker", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getNewsNewsticker(c)
+			return v2GetNewsTicker(c, oc)
 		}))
 		v1.GET("/boosted", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getBoosted(c)
+			return v2GetBoosted(c, oc)
 		}))
 		v1.GET("/maintenance", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getMaintenance(c)
+			return v2GetMaintenance(c, oc)
 		}))
 		v1.GET("/geo-language", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getGeoLanguage(c)
+			return v1GetGeoLanguage(c, oc)
 		}))
 		v1.GET("/outfit", getOutfit)
 		v1.GET("/outfit/:name", getOutfitByCharacterName)
@@ -135,107 +146,111 @@ func NewRouter() (*gin.Engine, error) {
 		v1.GET("/assets/charms/:name", handleStaticAsset(resolvedAssetsDir, "charms", "image/png", ".png"))
 		v1.GET("/assets/creature-types/:type", handleStaticAsset(resolvedAssetsDir, "creature-types", "image/png", ".png"))
 		v1.GET("/events/schedule", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getEventsSchedule(c)
+			return v1GetEventsSchedule(c, oc)
 		}))
 		v1.GET("/events/calendar", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getEventsCalendar(c)
+			return v2GetEventsCalendar(c, oc)
 		}))
 		v1.GET("/auctions/current/all/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllCurrentAuctionsDetails(c)
+			return v1GetAllCurrentAuctionsDetails(c, oc)
 		}))
 		v1.GET("/auctions/current/:page/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getCurrentAuctionsDetails(c)
+			return v2GetCurrentAuctionDetails(c, oc)
 		}))
 		v1.GET("/auctions/current/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllCurrentAuctions(c)
+			return v2GetAllCurrentAuctions(c, oc)
 		}))
 		v1.GET("/auctions/current/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getCurrentAuctions(c)
+			return v2GetCurrentAuctions(c, oc)
 		}))
 		v1.GET("/auctions/history/all/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllAuctionHistoryDetails(c)
+			return v1GetAllAuctionHistoryDetails(c, oc)
 		}))
 		v1.GET("/auctions/history/:page/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAuctionHistoryDetails(c)
+			return v2GetAuctionHistoryDetails(c, oc)
 		}))
 		v1.GET("/auctions/history/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllAuctionHistory(c)
+			return v2GetAllAuctionHistory(c, oc)
 		}))
 		v1.GET("/auctions/history/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAuctionHistory(c)
+			return v2GetAuctionHistory(c, oc)
 		}))
 		v1.GET("/auctions/:id", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAuctionDetail(c)
+			return v2GetAuctionDetail(c, oc)
 		}))
 		v1.GET("/deaths/:world/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllDeaths(c, getValidator())
+			return v2GetAllDeaths(c, getValidator(), oc)
 		}))
 		v1.GET("/deaths/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getDeaths(c, getValidator())
+			return v2GetDeaths(c, getValidator(), oc)
 		}))
 		v1.GET("/banishments/:world/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllBanishments(c, getValidator())
+			return v2GetAllBanishments(c, getValidator(), oc)
 		}))
 		v1.GET("/banishments/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getBanishments(c, getValidator())
+			return v2GetBanishments(c, getValidator(), oc)
 		}))
 		v1.GET("/transfers/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllTransfers(c, getValidator())
+			return v2GetAllTransfers(c, getValidator(), oc)
 		}))
 		v1.GET("/transfers", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getTransfers(c, getValidator())
+			return v2GetTransfers(c, getValidator(), oc)
 		}))
 		v1.GET("/character/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getCharacter(c)
+			return v2GetCharacter(c, oc)
 		}))
 		v1.GET("/guild/:name", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getGuild(c)
+			return v2GetGuild(c, oc)
 		}))
 		v1.GET("/guilds/:world/all/details", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllGuildsDetails(c, getValidator())
+			return v2GetAllGuildsDetails(c, getValidator(), oc)
 		}))
 		v1.GET("/guilds/:world/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getAllGuilds(c, getValidator())
+			return v2GetAllGuilds(c, getValidator(), oc)
 		}))
 		v1.GET("/guilds/:world/:page", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getGuildsPage(c, getValidator())
+			return v2GetGuilds(c, getValidator(), oc)
 		}))
 		v1.GET("/guilds/:world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return getGuilds(c, getValidator())
+			return v2GetGuilds(c, getValidator(), oc)
 		}))
 		v1.GET("/house/:world/:house_id", handleEndpoint(deprecatedHousesEndpoint))
 		v1.GET("/houses/towns", handleEndpoint(deprecatedHousesEndpoint))
 		v1.GET("/houses/:world/:town", handleEndpoint(deprecatedHousesEndpoint))
 
 		if getEnv("ENABLE_RAW_PROXY", "") == "true" {
-			v1.POST("/upstream/raw", handleEndpoint(postUpstreamRaw))
+			v1.POST("/upstream/raw", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+				return v1PostUpstreamRaw(c, oc)
+			}))
 		}
-		v1.POST("/characters/batch", handleEndpoint(postCharactersBatch))
-		v1.POST("/characters/compare", handleEndpoint(postCharactersCompare))
+		v1.POST("/characters/batch", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2PostCharactersBatch(c, oc)
+		}))
+		v1.POST("/characters/compare", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v1PostCharactersCompare(c, oc)
+		}))
 		v1.POST("/highscores/:category/cross-world", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return postHighscoresCrossWorld(c, getValidator())
+			return v1PostHighscoresCrossWorld(c, getValidator(), oc)
 		}))
 		v1.POST("/highscores/multi-category", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return postHighscoresMultiCategory(c, getValidator())
+			return v1PostHighscoresMultiCategory(c, getValidator(), oc)
 		}))
-		v1.POST("/guilds/batch", handleEndpoint(postGuildsBatch))
-		v1.POST("/auctions/filter", handleEndpoint(postAuctionsFilter))
+		v1.POST("/guilds/batch", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2PostGuildsBatch(c, oc)
+		}))
+		v1.POST("/auctions/filter", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v1PostAuctionsFilter(c, oc)
+		}))
 		v1.POST("/killstatistics/batch", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
-			return postKillstatisticsBatch(c, getValidator())
+			return v2PostKillstatisticsBatch(c, getValidator(), oc)
 		}))
-		v1.GET("/bans", handleEndpoint(getBans))
-		v1.GET("/news/all", handleEndpoint(getNewsAll))
+		v1.GET("/bans", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v1GetBans(c, oc)
+		}))
+		v1.GET("/news/all", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v1GetNewsAll(c, oc)
+		}))
 	}
-
-	oc, ocErr := initOptimizedClient(context.Background())
-	if ocErr != nil {
-		log.Printf("v2 optimized client init failed (v2 routes disabled): %v", ocErr)
-	}
-	if oc != nil {
-		registerV2Routes(router, oc)
-	}
-
-	return router, nil
 }
 
 func initOptimizedClient(ctx context.Context) (*scraper.OptimizedClient, error) {
@@ -254,294 +269,80 @@ func initOptimizedClient(ctx context.Context) (*scraper.OptimizedClient, error) 
 	return scraper.NewOptimizedClient(fetcher), nil
 }
 
-func getWorlds(c *gin.Context) (endpointResult, error) {
-	worlds, sourceURL, err := scraper.FetchWorlds(c.Request.Context(), resolvedBaseURL, resolvedOpts)
+func bootstrapValidatorV2(ctx context.Context, oc *scraper.OptimizedClient) (*validation.Validator, error) {
+	refreshStarted := time.Now()
+
+	worlds, _, err := scraper.V2FetchWorlds(ctx, oc, resolvedBaseURL)
 	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
+		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
+		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
+		return nil, err
 	}
 
-	return endpointResult{
-		PayloadKey: "worlds",
-		Payload:    worlds,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getWorld(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("name"))
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results := make([]domain.WorldResult, 0, len(worlds))
-		sources := make([]string, 0, len(worlds))
-		for _, world := range worlds {
-			worldResult, sourceURL, err := scraper.FetchWorld(c.Request.Context(), resolvedBaseURL, world.Name, resolvedOpts)
-			if err != nil {
-				return endpointResult{Sources: append(sources, sourceURL)}, err
+	validationWorlds := make([]validation.World, 0, len(worlds.Worlds))
+	for _, w := range worlds.Worlds {
+		name := strings.TrimSpace(w.Name)
+		if name == "" {
+			continue
+		}
+		id := w.ID
+		if id <= 0 {
+			if mapped, ok := scraper.WorldIDByName(name); ok {
+				id = mapped
 			}
-			results = append(results, worldResult)
-			sources = append(sources, sourceURL)
 		}
-
-		return endpointResult{
-			PayloadKey: "worlds",
-			Payload:    results,
-			Sources:    sources,
-		}, nil
+		if id <= 0 {
+			log.Printf("world %q skipped: no ID from API or mapping", name)
+			continue
+		}
+		validationWorlds = append(validationWorlds, validation.World{ID: id, Name: name})
+	}
+	if len(validationWorlds) == 0 {
+		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
+		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
+		return nil, validation.NewError(validation.ErrorUpstreamUnknown, "validator world bootstrap failed: no worlds discovered", nil)
 	}
 
-	canonicalWorld, _, ok := validator.WorldExists(worldInput)
-	if !ok {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
+	mappings := make([]scraper.WorldMapping, 0, len(validationWorlds))
+	for _, w := range validationWorlds {
+		mappings = append(mappings, scraper.WorldMapping{ID: w.ID, Name: w.Name})
 	}
+	scraper.UpdateWorldMappings(mappings)
 
-	baseURL := resolvedBaseURL
-	world, sourceURL, err := scraper.FetchWorld(c.Request.Context(), baseURL, canonicalWorld, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
+	validator := validation.NewValidator(validationWorlds)
+	categories := validator.AllCategories()
 
-	return endpointResult{
-		PayloadKey: "world",
-		Payload:    world,
-		Sources:    []string{sourceURL},
-	}, nil
+	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
+	scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
+	scraper.WorldsDiscovered.Set(float64(len(validationWorlds)))
+	scraper.DiscoveredCount.WithLabelValues("worlds").Set(float64(len(validationWorlds)))
+	scraper.DiscoveredCount.WithLabelValues("towns").Set(0)
+	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(categories)))
+	return validator, nil
 }
 
-func getWorldDetails(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("name"))
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results := make([]domain.WorldDetailsResult, 0, len(worlds))
-		sources := make([]string, 0)
-		for _, world := range worlds {
-			worldDetails, worldSources, err := scraper.FetchWorldDetails(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
+func startValidatorRefresh(oc *scraper.OptimizedClient) {
+	interval := time.Duration(getEnvInt("VALIDATOR_REFRESH_INTERVAL_SECONDS", 3600)) * time.Second
+	ticker := time.NewTicker(interval)
+	go func() {
+		defer ticker.Stop()
+		for range ticker.C {
+			validator, err := bootstrapValidatorV2(context.Background(), oc)
 			if err != nil {
-				return endpointResult{Sources: append(sources, worldSources...)}, err
+				log.Printf("validator refresh failed: %v", err)
+				continue
 			}
-			results = append(results, worldDetails)
-			sources = append(sources, worldSources...)
+			currentValidator.Store(validator)
 		}
-
-		return endpointResult{
-			PayloadKey: "worlds",
-			Payload:    results,
-			Sources:    sources,
-		}, nil
-	}
-
-	canonicalWorld, worldID, ok := validator.WorldExists(worldInput)
-	if !ok {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	world, sources, err := scraper.FetchWorldDetails(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "world",
-		Payload:    world,
-		Sources:    sources,
-	}, nil
+	}()
 }
 
-func getWorldDashboard(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("name"))
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results := make([]domain.WorldDashboardResult, 0, len(worlds))
-		sources := make([]string, 0)
-		for _, world := range worlds {
-			worldDashboard, worldSources, err := scraper.FetchWorldDashboard(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
-			if err != nil {
-				return endpointResult{Sources: append(sources, worldSources...)}, err
-			}
-			results = append(results, worldDashboard)
-			sources = append(sources, worldSources...)
-		}
-
-		return endpointResult{
-			PayloadKey: "worlds",
-			Payload:    results,
-			Sources:    sources,
-		}, nil
+func getValidator() *validation.Validator {
+	validator := currentValidator.Load()
+	if validator == nil {
+		panic("validator is not initialized")
 	}
-
-	canonicalWorld, worldID, ok := validator.WorldExists(worldInput)
-	if !ok {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	dashboard, sources, err := scraper.FetchWorldDashboard(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "dashboard",
-		Payload:    dashboard,
-		Sources:    sources,
-	}, nil
-}
-
-func getCharacter(c *gin.Context) (endpointResult, error) {
-	characterInput := strings.TrimSpace(c.Param("name"))
-	canonicalName, validationErr := validation.IsCharacterNameValid(characterInput)
-	if validationErr != nil {
-		return endpointResult{}, validationErr
-	}
-
-	baseURL := resolvedBaseURL
-	character, sourceURL, err := scraper.FetchCharacter(c.Request.Context(), baseURL, canonicalName, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "character",
-		Payload:    character,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getGuild(c *gin.Context) (endpointResult, error) {
-	guildInput := strings.TrimSpace(c.Param("name"))
-	canonicalName, validationErr := validation.IsGuildNameValid(guildInput)
-	if validationErr != nil {
-		return endpointResult{}, validationErr
-	}
-
-	baseURL := resolvedBaseURL
-	guild, sourceURL, err := scraper.FetchGuild(c.Request.Context(), baseURL, canonicalName, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "guild",
-		Payload:    guild,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getGuilds(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	page := 1
-	pageInput := strings.TrimSpace(c.Query("page"))
-	if pageInput != "" {
-		parsedPage, pageErr := validation.ParsePage(pageInput)
-		if pageErr != nil {
-			return endpointResult{}, pageErr
-		}
-		page = parsedPage
-	}
-	return getGuildsForPage(c, validator, page)
-}
-
-func getGuildsPage(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	pageInput := strings.TrimSpace(c.Param("page"))
-	page, pageErr := validation.ParsePage(pageInput)
-	if pageErr != nil {
-		return endpointResult{}, pageErr
-	}
-	return getGuildsForPage(c, validator, page)
-}
-
-func getAllGuilds(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results := make([]domain.GuildsResult, 0, len(worlds))
-		allSources := make([]string, 0)
-		for _, world := range worlds {
-			guilds, sources, err := scraper.FetchAllGuilds(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
-			if err != nil {
-				return endpointResult{Sources: append(allSources, sources...)}, err
-			}
-			results = append(results, guilds)
-			allSources = append(allSources, sources...)
-		}
-		return endpointResult{
-			PayloadKey: "guilds",
-			Payload:    results,
-			Sources:    allSources,
-		}, nil
-	}
-
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	guilds, sources, err := scraper.FetchAllGuilds(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "guilds",
-		Payload:    guilds,
-		Sources:    sources,
-	}, nil
-}
-
-func getAllGuildsDetails(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results := make([]domain.GuildsDetailsResult, 0, len(worlds))
-		allSources := make([]string, 0)
-		for _, world := range worlds {
-			guilds, sources, err := scraper.FetchAllGuildsDetails(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
-			if err != nil {
-				return endpointResult{Sources: append(allSources, sources...)}, err
-			}
-			results = append(results, guilds)
-			allSources = append(allSources, sources...)
-		}
-		return endpointResult{
-			PayloadKey: "guilds",
-			Payload:    results,
-			Sources:    allSources,
-		}, nil
-	}
-
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	guilds, sources, err := scraper.FetchAllGuildsDetails(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "guilds",
-		Payload:    guilds,
-		Sources:    sources,
-	}, nil
-}
-
-func getGuildsForPage(c *gin.Context, validator *validation.Validator, page int) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	guilds, sourceURL, err := scraper.FetchGuilds(c.Request.Context(), resolvedBaseURL, canonicalWorld, worldID, page, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "guilds",
-		Payload:    guilds,
-		Sources:    []string{sourceURL},
-	}, nil
+	return validator
 }
 
 func deprecatedHousesEndpoint(_ *gin.Context) (endpointResult, error) {
@@ -550,75 +351,6 @@ func deprecatedHousesEndpoint(_ *gin.Context) (endpointResult, error) {
 		"houses endpoints are deprecated: house data is available via /v1/character/:name",
 		nil,
 	)
-}
-
-func getHouses(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-	townInput := strings.TrimSpace(c.Param("town"))
-
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-	canonicalTown, townID, townOK := validator.TownExists(townInput)
-	if !townOK {
-		return endpointResult{}, validation.NewError(validation.ErrorTownDoesNotExist, "town does not exist", nil)
-	}
-
-	baseURL := resolvedBaseURL
-	houses, sourceURL, err := scraper.FetchHouses(
-		c.Request.Context(),
-		baseURL,
-		canonicalWorld,
-		worldID,
-		canonicalTown,
-		townID,
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "houses",
-		Payload:    houses,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getHouse(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-	houseIDInput := strings.TrimSpace(c.Param("house_id"))
-
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	houseID, parseErr := validation.ParseHouseID(houseIDInput)
-	if parseErr != nil {
-		return endpointResult{}, parseErr
-	}
-
-	baseURL := resolvedBaseURL
-	house, sourceURL, err := scraper.FetchHouse(
-		c.Request.Context(),
-		baseURL,
-		canonicalWorld,
-		worldID,
-		houseID,
-		validator.AllTowns(),
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "house",
-		Payload:    house,
-		Sources:    []string{sourceURL},
-	}, nil
 }
 
 func redirectHighscoresWorld(c *gin.Context) {
@@ -642,295 +374,18 @@ func redirectHighscoresVocation(c *gin.Context) {
 	c.Redirect(http.StatusFound, location)
 }
 
-func getHighscores(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-	categoryInput := strings.TrimSpace(c.Param("category"))
-	vocationInput := strings.TrimSpace(c.Param("vocation"))
-	pageInput := strings.TrimSpace(c.Param("page"))
-
-	category, categoryOK := validator.ResolveHighscoreCategory(categoryInput)
-	if !categoryOK {
-		return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, "highscore category does not exist", nil)
-	}
-
-	vocation, vocationOK := validator.ResolveHighscoreVocation(vocationInput)
-	if !vocationOK {
-		return endpointResult{}, validation.NewError(validation.ErrorVocationDoesNotExist, "vocation does not exist", nil)
-	}
-
-	page, pageErr := validation.ParsePage(pageInput)
-	if pageErr != nil {
-		return endpointResult{}, pageErr
-	}
-
-	var (
-		highscores domain.HighscoresResult
-		sourceURL  string
-		err        error
-	)
-	if isAllWorldsToken(worldInput) {
-		highscores, sourceURL, err = scraper.FetchHighscoresAllWorlds(
-			c.Request.Context(),
-			resolvedBaseURL,
-			category,
-			vocation,
-			page,
-			resolvedOpts,
-		)
-	} else {
-		canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-		if !worldOK {
-			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-		}
-		highscores, sourceURL, err = scraper.FetchHighscores(
-			c.Request.Context(),
-			resolvedBaseURL,
-			canonicalWorld,
-			worldID,
-			category,
-			vocation,
-			page,
-			resolvedOpts,
-		)
-	}
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "highscores",
-		Payload:    highscores,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getAllHighscores(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-	categoryInput := strings.TrimSpace(c.Param("category"))
-	vocationInput := strings.TrimSpace(c.Param("vocation"))
-
-	category, categoryOK := validator.ResolveHighscoreCategory(categoryInput)
-	if !categoryOK {
-		return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, "highscore category does not exist", nil)
-	}
-
-	vocation, vocationOK := validator.ResolveHighscoreVocation(vocationInput)
-	if !vocationOK {
-		return endpointResult{}, validation.NewError(validation.ErrorVocationDoesNotExist, "vocation does not exist", nil)
-	}
-
-	if isAllWorldsToken(worldInput) {
-		grouped, sources, err := scraper.FetchAllHighscoresPerWorld(
-			c.Request.Context(),
-			resolvedBaseURL,
-			validator.AllWorlds(),
-			category,
-			vocation,
-			resolvedOpts,
-		)
-		if err != nil {
-			return endpointResult{Sources: sources}, err
-		}
-		return endpointResult{
-			PayloadKey: "highscores",
-			Payload:    grouped,
-			Sources:    sources,
-		}, nil
-	}
-
-	var (
-		highscores domain.HighscoresResult
-		sourceURL  string
-		err        error
-	)
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-	highscores, sourceURL, err = scraper.FetchAllHighscores(
-		c.Request.Context(),
-		resolvedBaseURL,
-		canonicalWorld,
-		worldID,
-		category,
-		vocation,
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "highscores",
-		Payload:    highscores,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getKillstatistics(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results, sources, err := scraper.FetchAllWorldsKillstatistics(c.Request.Context(), resolvedBaseURL, worlds, resolvedOpts)
-		if err != nil {
-			return endpointResult{Sources: sources}, err
-		}
-		return endpointResult{
-			PayloadKey: "killstatistics",
-			Payload:    results,
-			Sources:    sources,
-		}, nil
-	}
-
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	baseURL := resolvedBaseURL
-	killstatistics, sourceURL, err := scraper.FetchKillstatistics(
-		c.Request.Context(),
-		baseURL,
-		canonicalWorld,
-		worldID,
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "killstatistics",
-		Payload:    killstatistics,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getNewsByID(c *gin.Context) (endpointResult, error) {
-	newsIDInput := strings.TrimSpace(c.Param("news_id"))
-	newsID, parseErr := validation.ParseNewsID(newsIDInput)
-	if parseErr != nil {
-		return endpointResult{}, parseErr
-	}
-
-	baseURL := resolvedBaseURL
-	news, sources, err := scraper.FetchNewsByID(c.Request.Context(), baseURL, newsID, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "news",
-		Payload:    news,
-		Sources:    sources,
-	}, nil
-}
-
-func getNewsArchive(c *gin.Context) (endpointResult, error) {
-	archiveDays, daysErr := validation.ParseArchiveDays(c.Query("days"), 90)
-	if daysErr != nil {
-		return endpointResult{}, daysErr
-	}
-
-	baseURL := resolvedBaseURL
-	newsList, sourceURL, err := scraper.FetchNewsArchive(c.Request.Context(), baseURL, archiveDays, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "newslist",
-		Payload:    newsList,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getNewsLatest(c *gin.Context) (endpointResult, error) {
-	baseURL := resolvedBaseURL
-	newsList, sourceURL, err := scraper.FetchNewsLatest(c.Request.Context(), baseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "newslist",
-		Payload:    newsList,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getNewsNewsticker(c *gin.Context) (endpointResult, error) {
-	baseURL := resolvedBaseURL
-	newsList, sourceURL, err := scraper.FetchNewsTicker(c.Request.Context(), baseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "newslist",
-		Payload:    newsList,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getBoosted(c *gin.Context) (endpointResult, error) {
-	baseURL := resolvedBaseURL
-	boosted, sourceURL, err := scraper.FetchBoosted(c.Request.Context(), baseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	boosted.Boss.ImageURL = fmt.Sprintf("/v1/outfit?type=%d", boosted.Boss.LookType)
-	boosted.Monster.ImageURL = fmt.Sprintf("/v1/outfit?type=%d", boosted.Monster.LookType)
-
-	return endpointResult{
-		PayloadKey: "boosted",
-		Payload:    boosted,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getMaintenance(c *gin.Context) (endpointResult, error) {
-	baseURL := resolvedBaseURL
-	maintenance, sourceURL, err := scraper.FetchMaintenance(c.Request.Context(), baseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "maintenance",
-		Payload:    maintenance,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getGeoLanguage(c *gin.Context) (endpointResult, error) {
-	baseURL := resolvedBaseURL
-	geoLanguage, sourceURL, err := scraper.FetchGeoLanguage(c.Request.Context(), baseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "geo_language",
-		Payload:    geoLanguage,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
 func getOutfit(c *gin.Context) {
-	baseURL := resolvedBaseURL
-	body, contentType, sourceURL, err := scraper.FetchOutfitImage(c.Request.Context(), baseURL, c.Request.URL.RawQuery, resolvedOpts)
+	oc := globalOC
+	body, contentType, sourceURL, err := scraper.V2FetchOutfitImage(c.Request.Context(), oc, resolvedBaseURL, c.Request.URL.RawQuery)
 	if err != nil {
 		writeOutfitError(c, err, []string{sourceURL})
 		return
 	}
-
 	writeOutfitResponse(c, body, contentType, sourceURL)
 }
 
 func getOutfitByCharacterName(c *gin.Context) {
+	oc := globalOC
 	characterInput := strings.TrimSpace(c.Param("name"))
 	canonicalName, validationErr := validation.IsCharacterNameValid(characterInput)
 	if validationErr != nil {
@@ -938,7 +393,7 @@ func getOutfitByCharacterName(c *gin.Context) {
 		return
 	}
 
-	character, characterSourceURL, err := scraper.FetchCharacter(c.Request.Context(), resolvedBaseURL, canonicalName, resolvedOpts)
+	character, characterSourceURL, err := scraper.V2FetchCharacter(c.Request.Context(), oc, resolvedBaseURL, canonicalName)
 	if err != nil {
 		writeOutfitError(c, err, []string{characterSourceURL})
 		return
@@ -957,7 +412,7 @@ func getOutfitByCharacterName(c *gin.Context) {
 	setOutfitDefaultParam(query, "feet", "lookfeet", strconv.Itoa(character.CharacterInfo.Outfit.LookFeet))
 	setOutfitDefaultParam(query, "addons", "lookaddons", strconv.Itoa(character.CharacterInfo.Outfit.LookAddons))
 
-	body, contentType, outfitSourceURL, err := scraper.FetchOutfitImage(c.Request.Context(), resolvedBaseURL, query.Encode(), resolvedOpts)
+	body, contentType, outfitSourceURL, err := scraper.V2FetchOutfitImage(c.Request.Context(), oc, resolvedBaseURL, query.Encode())
 	if err != nil {
 		writeOutfitError(c, err, []string{characterSourceURL, outfitSourceURL})
 		return
@@ -997,604 +452,6 @@ func writeOutfitError(c *gin.Context, err error, sources []string) {
 	c.JSON(httpCode, errorEnvelope(httpCode, errorCode, message, sources))
 }
 
-func getEventsSchedule(c *gin.Context) (endpointResult, error) {
-	month, monthErr := validation.ParseMonth(c.Query("month"))
-	if monthErr != nil {
-		return endpointResult{}, monthErr
-	}
-
-	year, yearErr := validation.ParseYear(c.Query("year"))
-	if yearErr != nil {
-		return endpointResult{}, yearErr
-	}
-
-	if month > 0 && year == 0 {
-		return endpointResult{}, validation.NewError(validation.ErrorYearInvalid, "year is required when month is provided", nil)
-	}
-	if year > 0 && month == 0 {
-		return endpointResult{}, validation.NewError(validation.ErrorMonthInvalid, "month is required when year is provided", nil)
-	}
-
-	baseURL := resolvedBaseURL
-	events, sourceURL, err := scraper.FetchEventsSchedule(c.Request.Context(), baseURL, month, year, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "events",
-		Payload:    events,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getEventsCalendar(c *gin.Context) (endpointResult, error) {
-	baseURL := resolvedBaseURL
-	events, sourceURL, err := scraper.FetchEventsCalendar(c.Request.Context(), baseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "events",
-		Payload:    events,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getCurrentAuctions(c *gin.Context) (endpointResult, error) {
-	pageInput := strings.TrimSpace(c.Param("page"))
-	page, pageErr := validation.ParsePage(pageInput)
-	if pageErr != nil {
-		return endpointResult{}, pageErr
-	}
-
-	baseURL := resolvedBaseURL
-	auctions, sourceURL, err := scraper.FetchCurrentAuctions(c.Request.Context(), baseURL, page, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getAllCurrentAuctions(c *gin.Context) (endpointResult, error) {
-	auctions, sources, err := scraper.FetchAllCurrentAuctions(c.Request.Context(), resolvedBaseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    sources,
-	}, nil
-}
-
-func getAuctionHistory(c *gin.Context) (endpointResult, error) {
-	pageInput := strings.TrimSpace(c.Param("page"))
-	page, pageErr := validation.ParsePage(pageInput)
-	if pageErr != nil {
-		return endpointResult{}, pageErr
-	}
-
-	baseURL := resolvedBaseURL
-	auctions, sourceURL, err := scraper.FetchAuctionHistory(c.Request.Context(), baseURL, page, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getAllAuctionHistory(c *gin.Context) (endpointResult, error) {
-	auctions, sources, err := scraper.FetchAllAuctionHistory(c.Request.Context(), resolvedBaseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    sources,
-	}, nil
-}
-
-func getCurrentAuctionsDetails(c *gin.Context) (endpointResult, error) {
-	pageInput := strings.TrimSpace(c.Param("page"))
-	page, pageErr := validation.ParsePage(pageInput)
-	if pageErr != nil {
-		return endpointResult{}, pageErr
-	}
-
-	auctions, sources, err := scraper.FetchCurrentAuctionsDetails(c.Request.Context(), resolvedBaseURL, page, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    sources,
-	}, nil
-}
-
-func getAllCurrentAuctionsDetails(c *gin.Context) (endpointResult, error) {
-	auctions, sources, err := scraper.FetchAllCurrentAuctionsDetails(c.Request.Context(), resolvedBaseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    sources,
-	}, nil
-}
-
-func getAuctionHistoryDetails(c *gin.Context) (endpointResult, error) {
-	pageInput := strings.TrimSpace(c.Param("page"))
-	page, pageErr := validation.ParsePage(pageInput)
-	if pageErr != nil {
-		return endpointResult{}, pageErr
-	}
-
-	auctions, sources, err := scraper.FetchAuctionHistoryDetails(c.Request.Context(), resolvedBaseURL, page, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    sources,
-	}, nil
-}
-
-func getAllAuctionHistoryDetails(c *gin.Context) (endpointResult, error) {
-	auctions, sources, err := scraper.FetchAllAuctionHistoryDetails(c.Request.Context(), resolvedBaseURL, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auctions",
-		Payload:    auctions,
-		Sources:    sources,
-	}, nil
-}
-
-func getAuctionDetail(c *gin.Context) (endpointResult, error) {
-	auctionIDInput := strings.TrimSpace(c.Param("id"))
-	auctionID, idErr := validation.ParseAuctionID(auctionIDInput)
-	if idErr != nil {
-		return endpointResult{}, idErr
-	}
-
-	baseURL := resolvedBaseURL
-	auction, sources, err := scraper.FetchAuctionDetail(c.Request.Context(), baseURL, auctionID, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "auction",
-		Payload:    auction,
-		Sources:    sources,
-	}, nil
-}
-
-func getTransfers(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Query("world"))
-	levelInput := strings.TrimSpace(c.Query("level"))
-	pageInput := strings.TrimSpace(c.Query("page"))
-
-	worldID := 0
-	canonicalWorld := ""
-	if worldInput != "" {
-		var worldOK bool
-		canonicalWorld, worldID, worldOK = validator.WorldExists(worldInput)
-		if !worldOK {
-			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-		}
-	}
-
-	minLevel, levelErr := validation.ParseLevelFilter(levelInput)
-	if levelErr != nil {
-		return endpointResult{}, levelErr
-	}
-
-	page := 1
-	if pageInput != "" {
-		var pageErr error
-		page, pageErr = validation.ParsePage(pageInput)
-		if pageErr != nil {
-			return endpointResult{}, pageErr
-		}
-	}
-
-	baseURL := resolvedBaseURL
-	transfers, sourceURL, err := scraper.FetchTransfers(
-		c.Request.Context(),
-		baseURL,
-		scraper.TransfersFilters{
-			WorldID:   worldID,
-			WorldName: canonicalWorld,
-			MinLevel:  minLevel,
-			Page:      page,
-		},
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "transfers",
-		Payload:    transfers,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getAllTransfers(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Query("world"))
-	levelInput := strings.TrimSpace(c.Query("level"))
-
-	worldID := 0
-	canonicalWorld := ""
-	if worldInput != "" {
-		var worldOK bool
-		canonicalWorld, worldID, worldOK = validator.WorldExists(worldInput)
-		if !worldOK {
-			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-		}
-	}
-
-	minLevel, levelErr := validation.ParseLevelFilter(levelInput)
-	if levelErr != nil {
-		return endpointResult{}, levelErr
-	}
-
-	transfers, sources, err := scraper.FetchAllTransfers(
-		c.Request.Context(),
-		resolvedBaseURL,
-		scraper.TransfersFilters{
-			WorldID:   worldID,
-			WorldName: canonicalWorld,
-			MinLevel:  minLevel,
-		},
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "transfers",
-		Payload:    transfers,
-		Sources:    sources,
-	}, nil
-}
-
-func getBanishments(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	page := 1
-	pageInput := strings.TrimSpace(c.Query("page"))
-	if pageInput != "" {
-		parsedPage, pageErr := validation.ParsePage(pageInput)
-		if pageErr != nil {
-			return endpointResult{}, pageErr
-		}
-		page = parsedPage
-	}
-
-	baseURL := resolvedBaseURL
-	banishments, sourceURL, err := scraper.FetchBanishments(
-		c.Request.Context(),
-		baseURL,
-		canonicalWorld,
-		worldID,
-		page,
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "banishments",
-		Payload:    banishments,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getAllBanishments(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results := make([]domain.BanishmentsResult, 0, len(worlds))
-		allSources := make([]string, 0)
-		for _, world := range worlds {
-			banishments, sources, err := scraper.FetchAllBanishments(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, resolvedOpts)
-			if err != nil {
-				return endpointResult{Sources: append(allSources, sources...)}, err
-			}
-			results = append(results, banishments)
-			allSources = append(allSources, sources...)
-		}
-		return endpointResult{
-			PayloadKey: "banishments",
-			Payload:    results,
-			Sources:    allSources,
-		}, nil
-	}
-
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	banishments, sources, err := scraper.FetchAllBanishments(
-		c.Request.Context(),
-		resolvedBaseURL,
-		canonicalWorld,
-		worldID,
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "banishments",
-		Payload:    banishments,
-		Sources:    sources,
-	}, nil
-}
-
-func getDeaths(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	page := 1
-	pageInput := strings.TrimSpace(c.Query("page"))
-	if pageInput != "" {
-		parsedPage, pageErr := validation.ParsePage(pageInput)
-		if pageErr != nil {
-			return endpointResult{}, pageErr
-		}
-		page = parsedPage
-	}
-
-	levelFilter, levelErr := validation.ParseLevelFilter(c.Query("level"))
-	if levelErr != nil {
-		return endpointResult{}, levelErr
-	}
-
-	pvpValue, pvpProvided, pvpErr := validation.ParsePvPOnlyFilter(c.Query("pvp"))
-	if pvpErr != nil {
-		return endpointResult{}, pvpErr
-	}
-
-	var pvpOnly *bool
-	if pvpProvided {
-		pvpOnly = &pvpValue
-	}
-
-	baseURL := resolvedBaseURL
-	deaths, sourceURL, err := scraper.FetchDeaths(
-		c.Request.Context(),
-		baseURL,
-		canonicalWorld,
-		worldID,
-		scraper.DeathsFilters{
-			MinLevel: levelFilter,
-			PvPOnly:  pvpOnly,
-			Page:     page,
-		},
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "deaths",
-		Payload:    deaths,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func getAllDeaths(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	worldInput := strings.TrimSpace(c.Param("world"))
-
-	levelFilter, levelErr := validation.ParseLevelFilter(c.Query("level"))
-	if levelErr != nil {
-		return endpointResult{}, levelErr
-	}
-
-	pvpValue, pvpProvided, pvpErr := validation.ParsePvPOnlyFilter(c.Query("pvp"))
-	if pvpErr != nil {
-		return endpointResult{}, pvpErr
-	}
-
-	var pvpOnly *bool
-	if pvpProvided {
-		pvpOnly = &pvpValue
-	}
-
-	filters := scraper.DeathsFilters{
-		MinLevel: levelFilter,
-		PvPOnly:  pvpOnly,
-	}
-
-	if isAllWorldsToken(worldInput) {
-		worlds := validator.AllWorlds()
-		results := make([]domain.DeathsResult, 0, len(worlds))
-		allSources := make([]string, 0)
-		for _, world := range worlds {
-			deaths, sources, err := scraper.FetchAllDeaths(c.Request.Context(), resolvedBaseURL, world.Name, world.ID, filters, resolvedOpts)
-			if err != nil {
-				return endpointResult{Sources: append(allSources, sources...)}, err
-			}
-			results = append(results, deaths)
-			allSources = append(allSources, sources...)
-		}
-		return endpointResult{
-			PayloadKey: "deaths",
-			Payload:    results,
-			Sources:    allSources,
-		}, nil
-	}
-
-	canonicalWorld, worldID, worldOK := validator.WorldExists(worldInput)
-	if !worldOK {
-		return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, "world does not exist", nil)
-	}
-
-	deaths, sources, err := scraper.FetchAllDeaths(
-		c.Request.Context(),
-		resolvedBaseURL,
-		canonicalWorld,
-		worldID,
-		filters,
-		resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-
-	return endpointResult{
-		PayloadKey: "deaths",
-		Payload:    deaths,
-		Sources:    sources,
-	}, nil
-}
-
-func bootstrapValidator(ctx context.Context) (*validation.Validator, error) {
-	baseURL := strings.TrimRight(resolvedBaseURL, "/")
-	client := scraper.NewClient(resolvedOpts)
-	refreshStarted := time.Now()
-
-	worlds, err := discoverWorlds(ctx, client, baseURL)
-	if err != nil {
-		scraper.ValidatorRefresh.WithLabelValues("error").Inc()
-		scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
-		return nil, err
-	}
-
-	mappings := make([]scraper.WorldMapping, 0, len(worlds))
-	for _, w := range worlds {
-		mappings = append(mappings, scraper.WorldMapping{ID: w.ID, Name: w.Name})
-	}
-	scraper.UpdateWorldMappings(mappings)
-
-	validator := validation.NewValidator(worlds)
-	categories := validator.AllCategories()
-
-	scraper.ValidatorRefresh.WithLabelValues("ok").Inc()
-	scraper.ValidatorRefreshDuration.Observe(time.Since(refreshStarted).Seconds())
-	scraper.WorldsDiscovered.Set(float64(len(worlds)))
-	scraper.DiscoveredCount.WithLabelValues("worlds").Set(float64(len(worlds)))
-	scraper.DiscoveredCount.WithLabelValues("towns").Set(0)
-	scraper.DiscoveredCount.WithLabelValues("categories").Set(float64(len(categories)))
-	return validator, nil
-}
-
-func discoverWorlds(ctx context.Context, client *scraper.Client, baseURL string) ([]validation.World, error) {
-	sourceURL := fmt.Sprintf("%s/api/worlds", baseURL)
-	started := time.Now()
-	var payload struct {
-		Worlds []struct {
-			ID   int    `json:"id"`
-			Name string `json:"name"`
-		} `json:"worlds"`
-	}
-	err := client.FetchJSON(ctx, sourceURL, &payload)
-	if err != nil {
-		scraper.DiscoveryTotal.WithLabelValues("worlds", "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
-		return nil, err
-	}
-
-	worlds := make([]validation.World, 0, len(payload.Worlds))
-	for _, row := range payload.Worlds {
-		name := strings.TrimSpace(row.Name)
-		if name == "" {
-			continue
-		}
-		id := row.ID
-		if id <= 0 {
-			if mapped, ok := scraper.WorldIDByName(name); ok {
-				id = mapped
-			}
-		}
-		if id <= 0 {
-			log.Printf("world %q skipped: no ID from API or mapping", name)
-			continue
-		}
-		worlds = append(worlds, validation.World{ID: id, Name: name})
-	}
-	if len(worlds) == 0 {
-		scraper.DiscoveryTotal.WithLabelValues("worlds", "error").Inc()
-		scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
-		return nil, validation.NewError(validation.ErrorUpstreamUnknown, "validator world bootstrap failed: no worlds discovered", nil)
-	}
-
-	scraper.DiscoveryTotal.WithLabelValues("worlds", "ok").Inc()
-	scraper.DiscoveryDuration.WithLabelValues("worlds").Observe(time.Since(started).Seconds())
-	return worlds, nil
-}
-
-func startValidatorRefresh() {
-	interval := time.Duration(getEnvInt("VALIDATOR_REFRESH_INTERVAL_SECONDS", 3600)) * time.Second
-	ticker := time.NewTicker(interval)
-	go func() {
-		defer ticker.Stop()
-		for range ticker.C {
-			validator, err := bootstrapValidator(context.Background())
-			if err != nil {
-				log.Printf("validator refresh failed: %v", err)
-				continue
-			}
-			currentValidator.Store(validator)
-		}
-	}()
-}
-
-func getValidator() *validation.Validator {
-	validator := currentValidator.Load()
-	if validator == nil {
-		panic("validator is not initialized")
-	}
-	return validator
-}
-
-func scrapeFetchOptions() scraper.FetchOptions {
-	return scraper.FetchOptions{
-		FlareSolverrURL: getEnv("FLARESOLVERR_URL", ""),
-		MaxTimeoutMs:    getEnvInt("SCRAPE_MAX_TIMEOUT_MS", defaultScrapeTimeoutMS),
-		CDPURL:          getEnv("CDP_URL", ""),
-	}
-}
-
 func isAllWorldsToken(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(value), "all")
 }
@@ -1610,90 +467,6 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
-}
-
-func postUpstreamRaw(c *gin.Context) (endpointResult, error) {
-	var req struct {
-		Path string `json:"path" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path is required", err)
-	}
-	cleaned := path.Clean(req.Path)
-	if !strings.HasPrefix(cleaned, "/api/") {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path must start with /api/", nil)
-	}
-
-	client := scraper.NewClient(resolvedOpts)
-	sourceURL := fmt.Sprintf("%s%s", strings.TrimRight(resolvedBaseURL, "/"), cleaned)
-	var raw any
-	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
-		return endpointResult{Sources: []string{sourceURL}}, err
-	}
-	return endpointResult{
-		PayloadKey: "raw",
-		Payload:    raw,
-		Sources:    []string{sourceURL},
-	}, nil
-}
-
-func postCharactersBatch(c *gin.Context) (endpointResult, error) {
-	var req struct {
-		Names []string `json:"names" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
-	}
-	if len(req.Names) > 1000 {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 1000 names per batch", nil)
-	}
-	if len(req.Names) == 0 {
-		return endpointResult{
-			PayloadKey: "characters",
-			Payload:    []domain.CharacterResult{},
-			Sources:    []string{},
-		}, nil
-	}
-
-	results, sources, err := scraper.FetchCharactersBatch(c.Request.Context(), resolvedBaseURL, req.Names, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-	return endpointResult{
-		PayloadKey: "characters",
-		Payload:    results,
-		Sources:    sources,
-	}, nil
-}
-
-func postCharactersCompare(c *gin.Context) (endpointResult, error) {
-	var req struct {
-		Names []string `json:"names" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
-	}
-	if len(req.Names) != 2 {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "exactly 2 names required", nil)
-	}
-
-	results, sources, err := scraper.FetchCharactersBatch(c.Request.Context(), resolvedBaseURL, req.Names, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-	if len(results) < 2 {
-		return endpointResult{Sources: sources}, validation.NewError(validation.ErrorEntityNotFound, "one or both characters not found", nil)
-	}
-
-	signals := compareCharacters(results[0], results[1])
-	return endpointResult{
-		PayloadKey: "comparison",
-		Payload: domain.ComparisonResult{
-			Characters: results,
-			Signals:    signals,
-		},
-		Sources: sources,
-	}, nil
 }
 
 func compareCharacters(a, b domain.CharacterResult) domain.ComparisonSignals {
@@ -1754,7 +527,143 @@ func compareCharacters(a, b domain.CharacterResult) domain.ComparisonSignals {
 	}
 }
 
-func postHighscoresCrossWorld(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+func v1GetAllHighscores(c *gin.Context, validator *validation.Validator, oc *scraper.OptimizedClient) (endpointResult, error) {
+	worldInput := strings.TrimSpace(c.Param("world"))
+	categoryInput := strings.TrimSpace(c.Param("category"))
+	vocationInput := strings.TrimSpace(c.Param("vocation"))
+
+	category, categoryOK := validator.ResolveHighscoreCategory(categoryInput)
+	if !categoryOK {
+		return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, "highscore category does not exist", nil)
+	}
+
+	vocation, vocationOK := validator.ResolveHighscoreVocation(vocationInput)
+	if !vocationOK {
+		return endpointResult{}, validation.NewError(validation.ErrorVocationDoesNotExist, "vocation does not exist", nil)
+	}
+
+	if isAllWorldsToken(worldInput) {
+		worlds := validator.AllWorlds()
+		results, sources, err := scraper.V2FetchHighscoresBatch(c.Request.Context(), oc, resolvedBaseURL, worlds, category, vocation)
+		if err != nil {
+			return endpointResult{Sources: sources}, err
+		}
+		totalRecords := 0
+		totalEntries := 0
+		for _, r := range results {
+			totalRecords += r.HighscorePage.TotalRecords
+			totalEntries += len(r.HighscoreList)
+		}
+		return endpointResult{
+			PayloadKey: "highscores",
+			Payload: domain.HighscoresByWorldResult{
+				World:        "all",
+				Category:     category.Slug,
+				Vocation:     vocation.Name,
+				TotalWorlds:  len(results),
+				TotalRecords: totalRecords,
+				TotalEntries: totalEntries,
+				Worlds:       results,
+			},
+			Sources: sources,
+		}, nil
+	}
+
+	return v2GetHighscores(c, validator, oc)
+}
+
+func v1GetGeoLanguage(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	result, sourceURL, err := scraper.V2FetchGeoLanguage(c.Request.Context(), oc, resolvedBaseURL)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{
+		PayloadKey: "geo_language",
+		Payload:    result,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func v1GetEventsSchedule(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	return v2GetEventsCalendar(c, oc)
+}
+
+func v1GetAllCurrentAuctionsDetails(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	result, sources, err := scraper.V2FetchAllCurrentAuctionDetails(c.Request.Context(), oc, resolvedBaseURL)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{PayloadKey: "auctions", Payload: result, Sources: sources}, nil
+}
+
+func v1GetAllAuctionHistoryDetails(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	result, sources, err := scraper.V2FetchAllAuctionHistoryDetails(c.Request.Context(), oc, resolvedBaseURL)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	return endpointResult{PayloadKey: "auctions", Payload: result, Sources: sources}, nil
+}
+
+func v1PostUpstreamRaw(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	var req struct {
+		Path string `json:"path" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path is required", err)
+	}
+	cleaned := strings.TrimSpace(req.Path)
+	if !strings.HasPrefix(cleaned, "/api/") {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path must start with /api/", nil)
+	}
+
+	sourceURL := fmt.Sprintf("%s%s", strings.TrimRight(resolvedBaseURL, "/"), cleaned)
+	rawBody, err := oc.Fetcher.FetchJSON(c.Request.Context(), sourceURL)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	var raw json.RawMessage
+	if err := json.Unmarshal([]byte(rawBody), &raw); err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+	return endpointResult{
+		PayloadKey: "raw",
+		Payload:    raw,
+		Sources:    []string{sourceURL},
+	}, nil
+}
+
+func v1PostCharactersCompare(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	var req struct {
+		Names []string `json:"names" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
+	}
+	if len(req.Names) != 2 {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "exactly 2 names required", nil)
+	}
+
+	results, sources, err := scraper.V2FetchCharactersBatch(c.Request.Context(), oc, resolvedBaseURL, req.Names)
+	if err != nil {
+		return endpointResult{Sources: sources}, err
+	}
+	if len(results) < 2 {
+		return endpointResult{Sources: sources}, validation.NewError(validation.ErrorEntityNotFound, "one or both characters not found", nil)
+	}
+
+	signals := compareCharacters(results[0], results[1])
+	return endpointResult{
+		PayloadKey: "comparison",
+		Payload: domain.ComparisonResult{
+			Characters: results,
+			Signals:    signals,
+		},
+		Sources: sources,
+	}, nil
+}
+
+func v1PostHighscoresCrossWorld(c *gin.Context, validator *validation.Validator, oc *scraper.OptimizedClient) (endpointResult, error) {
 	categoryInput := strings.TrimSpace(c.Param("category"))
 	category, categoryOK := validator.ResolveHighscoreCategory(categoryInput)
 	if !categoryOK {
@@ -1772,20 +681,29 @@ func postHighscoresCrossWorld(c *gin.Context, validator *validation.Validator) (
 	}
 
 	worlds := validator.AllWorlds()
-	results, sources, err := scraper.FetchHighscoresCrossWorldAllVocations(
-		c.Request.Context(), resolvedBaseURL, category, req.Vocations, worlds, resolvedOpts,
-	)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
+	allSources := make([]string, 0)
+	resultMap := make(map[string][]domain.HighscoresResult)
+	for _, vocID := range req.Vocations {
+		voc, vocOK := validator.ResolveHighscoreVocation(strconv.Itoa(vocID))
+		if !vocOK {
+			continue
+		}
+		results, sources, err := scraper.V2FetchHighscoresBatch(c.Request.Context(), oc, resolvedBaseURL, worlds, category, voc)
+		if err != nil {
+			return endpointResult{Sources: append(allSources, sources...)}, err
+		}
+		allSources = append(allSources, sources...)
+		resultMap[strconv.Itoa(vocID)] = results
 	}
+
 	return endpointResult{
 		PayloadKey: "highscores",
-		Payload:    results,
-		Sources:    sources,
+		Payload:    resultMap,
+		Sources:    allSources,
 	}, nil
 }
 
-func postHighscoresMultiCategory(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
+func v1PostHighscoresMultiCategory(c *gin.Context, validator *validation.Validator, oc *scraper.OptimizedClient) (endpointResult, error) {
 	var req struct {
 		Categories []string `json:"categories" binding:"required"`
 		Vocations  []int    `json:"vocations" binding:"required"`
@@ -1809,14 +727,20 @@ func postHighscoresMultiCategory(c *gin.Context, validator *validation.Validator
 		if !categoryOK {
 			return endpointResult{}, validation.NewError(validation.ErrorHighscoreCategoryDoesNotExist, fmt.Sprintf("category not found: %s", catInput), nil)
 		}
-		results, sources, err := scraper.FetchHighscoresCrossWorldAllVocations(
-			c.Request.Context(), resolvedBaseURL, category, req.Vocations, worlds, resolvedOpts,
-		)
-		if err != nil {
-			return endpointResult{Sources: allSources}, err
+		vocMap := make(map[string][]domain.HighscoresResult)
+		for _, vocID := range req.Vocations {
+			voc, vocOK := validator.ResolveHighscoreVocation(strconv.Itoa(vocID))
+			if !vocOK {
+				continue
+			}
+			results, sources, err := scraper.V2FetchHighscoresBatch(c.Request.Context(), oc, resolvedBaseURL, worlds, category, voc)
+			if err != nil {
+				return endpointResult{Sources: append(allSources, sources...)}, err
+			}
+			allSources = append(allSources, sources...)
+			vocMap[strconv.Itoa(vocID)] = results
 		}
-		allSources = append(allSources, sources...)
-		resultMap[category.Slug] = results
+		resultMap[category.Slug] = vocMap
 	}
 
 	return endpointResult{
@@ -1826,29 +750,7 @@ func postHighscoresMultiCategory(c *gin.Context, validator *validation.Validator
 	}, nil
 }
 
-func postGuildsBatch(c *gin.Context) (endpointResult, error) {
-	var req struct {
-		Names []string `json:"names" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "names is required", err)
-	}
-	if len(req.Names) > 20 {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 20 guild names per batch", nil)
-	}
-
-	results, sources, err := scraper.FetchGuildsBatch(c.Request.Context(), resolvedBaseURL, req.Names, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-	return endpointResult{
-		PayloadKey: "guilds",
-		Payload:    results,
-		Sources:    sources,
-	}, nil
-}
-
-func postAuctionsFilter(c *gin.Context) (endpointResult, error) {
+func v1PostAuctionsFilter(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
 	var req struct {
 		Vocation int `json:"vocation"`
 		MinLevel int `json:"minLevel"`
@@ -1874,9 +776,13 @@ func postAuctionsFilter(c *gin.Context) (endpointResult, error) {
 	}
 
 	sourceURL := fmt.Sprintf("%s/api/bazaar?%s", strings.TrimRight(resolvedBaseURL, "/"), query.Encode())
-	client := scraper.NewClient(resolvedOpts)
-	var raw any
-	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
+	rawBody, err := oc.Fetcher.FetchJSON(c.Request.Context(), sourceURL)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	var raw json.RawMessage
+	if err := json.Unmarshal([]byte(rawBody), &raw); err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
 	return endpointResult{
@@ -1886,42 +792,10 @@ func postAuctionsFilter(c *gin.Context) (endpointResult, error) {
 	}, nil
 }
 
-func postKillstatisticsBatch(c *gin.Context, validator *validation.Validator) (endpointResult, error) {
-	var req struct {
-		Worlds []string `json:"worlds" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "worlds is required", err)
-	}
-	if len(req.Worlds) > 20 {
-		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "max 20 worlds per batch", nil)
-	}
-
-	validWorlds := make([]validation.World, 0, len(req.Worlds))
-	for _, w := range req.Worlds {
-		name, id, ok := validator.WorldExists(w)
-		if !ok {
-			return endpointResult{}, validation.NewError(validation.ErrorWorldDoesNotExist, fmt.Sprintf("world not found: %s", w), nil)
-		}
-		validWorlds = append(validWorlds, validation.World{Name: name, ID: id})
-	}
-
-	results, sources, err := scraper.FetchAllWorldsKillstatistics(c.Request.Context(), resolvedBaseURL, validWorlds, resolvedOpts)
-	if err != nil {
-		return endpointResult{Sources: sources}, err
-	}
-	return endpointResult{
-		PayloadKey: "killstatistics",
-		Payload:    results,
-		Sources:    sources,
-	}, nil
-}
-
-func getBans(c *gin.Context) (endpointResult, error) {
+func v1GetBans(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
 	sourceURL := fmt.Sprintf("%s/api/bans", strings.TrimRight(resolvedBaseURL, "/"))
-	client := scraper.NewClient(resolvedOpts)
 	var raw any
-	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
+	if err := oc.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
 	return endpointResult{
@@ -1931,11 +805,10 @@ func getBans(c *gin.Context) (endpointResult, error) {
 	}, nil
 }
 
-func getNewsAll(c *gin.Context) (endpointResult, error) {
+func v1GetNewsAll(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
 	sourceURL := fmt.Sprintf("%s/api/news", strings.TrimRight(resolvedBaseURL, "/"))
-	client := scraper.NewClient(resolvedOpts)
 	var raw any
-	if err := client.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
+	if err := oc.FetchJSON(c.Request.Context(), sourceURL, &raw); err != nil {
 		return endpointResult{Sources: []string{sourceURL}}, err
 	}
 	return endpointResult{

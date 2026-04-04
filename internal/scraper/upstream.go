@@ -185,6 +185,18 @@ func FetchGeoLanguage(ctx context.Context, baseURL string, opts FetchOptions) (d
 	}, sourceURL, nil
 }
 
+func V2FetchGeoLanguage(ctx context.Context, oc *OptimizedClient, baseURL string) (domain.GeoLanguageResult, string, error) {
+	sourceURL := fmt.Sprintf("%s/api/geo-language", strings.TrimRight(baseURL, "/"))
+	var payload geoLanguageAPIResponse
+	if err := oc.FetchJSON(ctx, sourceURL, &payload); err != nil {
+		return domain.GeoLanguageResult{}, sourceURL, err
+	}
+	return domain.GeoLanguageResult{
+		Language:    strings.TrimSpace(payload.Language),
+		CountryCode: strings.TrimSpace(payload.CountryCode),
+	}, sourceURL, nil
+}
+
 func FetchOutfitImage(ctx context.Context, baseURL, rawQuery string, opts FetchOptions) ([]byte, string, string, error) {
 	ctx, span := tracer.Start(ctx, "scraper.FetchOutfitImage")
 	defer span.End()
@@ -202,6 +214,37 @@ func FetchOutfitImage(ctx context.Context, baseURL, rawQuery string, opts FetchO
 	started := time.Now()
 	client := NewClient(opts)
 	body, contentType, err := client.FetchBinary(ctx, sourceURL)
+	scrapeDuration.WithLabelValues("outfit").Observe(time.Since(started).Seconds())
+	if err != nil {
+		scrapeRequests.WithLabelValues("outfit", "error").Inc()
+		return nil, "", sourceURL, err
+	}
+	scrapeRequests.WithLabelValues("outfit", "ok").Inc()
+	ParseItems.WithLabelValues("outfit").Set(float64(len(body)))
+	return body, contentType, sourceURL, nil
+}
+
+func V2FetchOutfitImage(ctx context.Context, oc *OptimizedClient, baseURL, rawQuery string) ([]byte, string, string, error) {
+	ctx, span := tracer.Start(ctx, "scraper.V2FetchOutfitImage")
+	defer span.End()
+
+	normalizedQuery := normalizeOutfitQuery(rawQuery)
+	sourceURL := fmt.Sprintf("%s/api/outfit", strings.TrimRight(baseURL, "/"))
+	if normalizedQuery != "" {
+		sourceURL += "?" + normalizedQuery
+	}
+	span.SetAttributes(
+		attribute.String("rubinot.endpoint", "outfit"),
+		attribute.String("rubinot.source_url", sourceURL),
+	)
+
+	apiPath, pathErr := apiPathFromURL(sourceURL)
+	if pathErr != nil {
+		return nil, "", sourceURL, pathErr
+	}
+
+	started := time.Now()
+	body, contentType, err := oc.Fetcher.FetchBinary(ctx, apiPath)
 	scrapeDuration.WithLabelValues("outfit").Observe(time.Since(started).Seconds())
 	if err != nil {
 		scrapeRequests.WithLabelValues("outfit", "error").Inc()

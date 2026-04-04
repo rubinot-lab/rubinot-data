@@ -164,6 +164,20 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 	return result.(string), nil
 }
 
+func (f *CachedFetcher) FetchBinary(ctx context.Context, apiPath string) ([]byte, string, error) {
+	tab, idx, err := f.pool.Acquire(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer f.pool.Release(idx)
+
+	body, _, contentType, fetchErr := tab.FetchBinary(ctx, apiPath)
+	if fetchErr != nil {
+		return nil, "", fetchErr
+	}
+	return body, contentType, nil
+}
+
 func (f *CachedFetcher) BatchFetchJSON(ctx context.Context, apiURLs []string) (map[string]string, error) {
 	results := make(map[string]string, len(apiURLs))
 	pending := make([]string, 0)
