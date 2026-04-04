@@ -20,22 +20,25 @@ import (
 )
 
 const (
-	defaultRubinotBaseURL  = "https://rubinot.com.br"
-	defaultScrapeTimeoutMS = 120000
-	defaultServiceVersion  = "dev"
+	defaultRubinotBaseURL    = "https://rubinot.com.br"
+	defaultScrapeTimeoutMS   = 120000
+	defaultRequestTimeoutMS  = 45000
+	defaultServiceVersion    = "dev"
 )
 
 var (
-	resolvedBaseURL   string
-	resolvedOpts      scraper.FetchOptions
-	resolvedAssetsDir string
-	currentValidator  atomic.Pointer[validation.Validator]
+	resolvedBaseURL      string
+	resolvedOpts         scraper.FetchOptions
+	resolvedAssetsDir    string
+	resolvedRequestTimeout int
+	currentValidator     atomic.Pointer[validation.Validator]
 )
 
 func NewRouter() (*gin.Engine, error) {
 	resolvedBaseURL = getEnv("RUBINOT_BASE_URL", defaultRubinotBaseURL)
 	resolvedOpts = scrapeFetchOptions()
 	resolvedAssetsDir = getEnv("ASSETS_DIR", "assets")
+	resolvedRequestTimeout = getEnvInt("REQUEST_TIMEOUT_MS", defaultRequestTimeoutMS)
 
 	validator, err := bootstrapValidator(context.Background())
 	if err != nil {

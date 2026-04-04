@@ -21,7 +21,7 @@ type endpointHandler func(c *gin.Context) (endpointResult, error)
 
 func handleEndpoint(handler endpointHandler) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		timeout := time.Duration(resolvedOpts.MaxTimeoutMs) * time.Millisecond
+		timeout := time.Duration(resolvedRequestTimeout) * time.Millisecond
 		ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 		defer cancel()
 		c.Request = c.Request.WithContext(ctx)
