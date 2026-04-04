@@ -857,6 +857,283 @@ func v2FetchAllAuctions(ctx context.Context, oc *OptimizedClient, baseURL, aucti
 	})
 }
 
+func V2FetchCharactersBatch(ctx context.Context, oc *OptimizedClient, baseURL string, names []string) ([]domain.CharacterResult, []string, error) {
+	base := strings.TrimRight(baseURL, "/")
+	paths := make([]string, len(names))
+	sources := make([]string, len(names))
+	for i, name := range names {
+		query := url.Values{}
+		query.Set("name", strings.TrimSpace(name))
+		path := fmt.Sprintf("/api/characters/search?%s", query.Encode())
+		paths[i] = path
+		sources[i] = base + path
+	}
+
+	tab, idx, err := oc.Fetcher.pool.Acquire(ctx)
+	if err != nil {
+		return nil, sources, err
+	}
+	defer oc.Fetcher.pool.Release(idx)
+
+	batchResults, err := tab.BatchFetch(ctx, paths)
+	if err != nil {
+		return nil, sources, err
+	}
+
+	characters := make([]domain.CharacterResult, 0, len(batchResults))
+	for _, br := range batchResults {
+		if br.Status != "fulfilled" {
+			continue
+		}
+		trimmed := strings.TrimSpace(br.Value)
+		if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+			continue
+		}
+		var payload characterAPIResponse
+		if err := parseJSONBody(trimmed, &payload); err != nil {
+			continue
+		}
+		if payload.Player == nil {
+			continue
+		}
+		characters = append(characters, mapCharacterResponse(payload))
+	}
+	return characters, sources, nil
+}
+
+func V2FetchGuildsBatch(ctx context.Context, oc *OptimizedClient, baseURL string, names []string) ([]domain.GuildResult, []string, error) {
+	base := strings.TrimRight(baseURL, "/")
+	paths := make([]string, len(names))
+	sources := make([]string, len(names))
+	for i, name := range names {
+		path := fmt.Sprintf("/api/guilds/%s", url.PathEscape(strings.TrimSpace(name)))
+		paths[i] = path
+		sources[i] = base + path
+	}
+
+	tab, idx, err := oc.Fetcher.pool.Acquire(ctx)
+	if err != nil {
+		return nil, sources, err
+	}
+	defer oc.Fetcher.pool.Release(idx)
+
+	batchResults, err := tab.BatchFetch(ctx, paths)
+	if err != nil {
+		return nil, sources, err
+	}
+
+	guilds := make([]domain.GuildResult, 0, len(batchResults))
+	for _, br := range batchResults {
+		if br.Status != "fulfilled" {
+			continue
+		}
+		trimmed := strings.TrimSpace(br.Value)
+		if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+			continue
+		}
+		var payload guildAPIResponse
+		if err := parseJSONBody(trimmed, &payload); err != nil {
+			continue
+		}
+		guilds = append(guilds, mapGuildResponse(payload))
+	}
+	return guilds, sources, nil
+}
+
+func V2FetchKillstatisticsBatchDirect(ctx context.Context, oc *OptimizedClient, baseURL string, worlds []validation.World) ([]domain.KillstatisticsResult, []string, error) {
+	base := strings.TrimRight(baseURL, "/")
+	paths := make([]string, len(worlds))
+	sources := make([]string, len(worlds))
+	for i, w := range worlds {
+		path := fmt.Sprintf("/api/killstats?world=%d", w.ID)
+		paths[i] = path
+		sources[i] = base + path
+	}
+
+	tab, idx, err := oc.Fetcher.pool.Acquire(ctx)
+	if err != nil {
+		return nil, sources, err
+	}
+	defer oc.Fetcher.pool.Release(idx)
+
+	batchResults, err := tab.BatchFetch(ctx, paths)
+	if err != nil {
+		return nil, sources, err
+	}
+
+	results := make([]domain.KillstatisticsResult, 0, len(batchResults))
+	for i, br := range batchResults {
+		if br.Status != "fulfilled" {
+			continue
+		}
+		trimmed := strings.TrimSpace(br.Value)
+		if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
+			continue
+		}
+		var payload killstatisticsAPIResponse
+		if err := parseJSONBody(trimmed, &payload); err != nil {
+			continue
+		}
+		results = append(results, mapKillstatisticsResponse(worlds[i].Name, payload))
+	}
+	return results, sources, nil
+}
+
+func V2FetchAllGuildsDetails(ctx context.Context, oc *OptimizedClient, baseURL, worldName string, worldID int) (domain.GuildsDetailsResult, []string, error) {
+	guildList, listSources, err := V2FetchAllGuilds(ctx, oc, baseURL, worldName, worldID)
+	if err != nil {
+		return domain.GuildsDetailsResult{}, listSources, err
+	}
+
+	if len(guildList.Guilds) == 0 {
+		return domain.GuildsDetailsResult{World: worldName, Guilds: []domain.GuildResult{}}, listSources, nil
+	}
+
+	base := strings.TrimRight(baseURL, "/")
+	guildURLs := make([]string, len(guildList.Guilds))
+	for i, g := range guildList.Guilds {
+		guildURLs[i] = fmt.Sprintf("%s/api/guilds/%s", base, url.PathEscape(strings.TrimSpace(g.Name)))
+	}
+
+	batchBodies, err := oc.BatchFetchJSON(ctx, guildURLs)
+	if err != nil {
+		return domain.GuildsDetailsResult{}, listSources, err
+	}
+
+	guilds := make([]domain.GuildResult, 0, len(guildList.Guilds))
+	allSources := make([]string, 0, len(listSources)+len(guildURLs))
+	allSources = append(allSources, listSources...)
+
+	for _, g := range guildList.Guilds {
+		guildURL := fmt.Sprintf("%s/api/guilds/%s", base, url.PathEscape(strings.TrimSpace(g.Name)))
+		raw, ok := batchBodies[guildURL]
+		if !ok {
+			continue
+		}
+		var payload guildAPIResponse
+		if err := parseJSONBody(raw, &payload); err != nil {
+			continue
+		}
+		guilds = append(guilds, mapGuildResponse(payload))
+		allSources = append(allSources, guildURL)
+	}
+
+	return domain.GuildsDetailsResult{World: worldName, Guilds: guilds}, allSources, nil
+}
+
+func V2FetchEventsCalendar(ctx context.Context, oc *OptimizedClient, baseURL string) (domain.EventsCalendarResult, string, error) {
+	sourceURL := fmt.Sprintf("%s/api/events/calendar", strings.TrimRight(baseURL, "/"))
+	var payload eventsCalendarAPIResponse
+	if err := oc.FetchJSON(ctx, sourceURL, &payload); err != nil {
+		return domain.EventsCalendarResult{}, sourceURL, err
+	}
+	result := domain.EventsCalendarResult{
+		Month:       payload.Month,
+		Year:        payload.Year,
+		Events:      mapEventsCalendarEvents(payload.Events),
+		EventsByDay: make(map[string][]domain.EventsCalendarEvent, len(payload.EventsByDay)),
+	}
+	for day, events := range payload.EventsByDay {
+		result.EventsByDay[day] = mapEventsCalendarEvents(events)
+	}
+	return result, sourceURL, nil
+}
+
+type highscoreCategoriesAPIResponse struct {
+	Categories []struct {
+		ID   int    `json:"id"`
+		Name string `json:"name"`
+		Slug string `json:"slug"`
+	} `json:"categories"`
+}
+
+func V2FetchHighscoreCategories(ctx context.Context, oc *OptimizedClient, baseURL string) (domain.HighscoreCategoriesResult, string, error) {
+	sourceURL := fmt.Sprintf("%s/api/highscores/categories", strings.TrimRight(baseURL, "/"))
+	var payload highscoreCategoriesAPIResponse
+	if err := oc.FetchJSON(ctx, sourceURL, &payload); err != nil {
+		return domain.HighscoreCategoriesResult{}, sourceURL, err
+	}
+	categories := make([]domain.HighscoresCategoryEntry, 0, len(payload.Categories))
+	for _, c := range payload.Categories {
+		categories = append(categories, domain.HighscoresCategoryEntry{
+			ID:   c.ID,
+			Name: strings.TrimSpace(c.Name),
+			Slug: strings.TrimSpace(c.Slug),
+		})
+	}
+	return domain.HighscoreCategoriesResult{Categories: categories}, sourceURL, nil
+}
+
+func V2FetchV2AuctionDetail(ctx context.Context, oc *OptimizedClient, baseURL string, auctionID int) (domain.V2AuctionDetail, string, error) {
+	sourceURL := fmt.Sprintf("%s/api/bazaar/%d", strings.TrimRight(baseURL, "/"), auctionID)
+	var payload v2AuctionDetailAPIResponse
+	if err := oc.FetchJSON(ctx, sourceURL, &payload); err != nil {
+		return domain.V2AuctionDetail{}, sourceURL, err
+	}
+	return mapV2AuctionDetailResponse(payload), sourceURL, nil
+}
+
+func V2FetchCurrentAuctionDetails(ctx context.Context, oc *OptimizedClient, baseURL string, page int) (domain.V2AuctionsDetailsResult, string, error) {
+	return v2FetchAuctionDetailsPage(ctx, oc, baseURL, "current", page)
+}
+
+func V2FetchAuctionHistoryDetails(ctx context.Context, oc *OptimizedClient, baseURL string, page int) (domain.V2AuctionsDetailsResult, string, error) {
+	return v2FetchAuctionDetailsPage(ctx, oc, baseURL, "history", page)
+}
+
+func v2FetchAuctionDetailsPage(ctx context.Context, oc *OptimizedClient, baseURL, auctionType string, page int) (domain.V2AuctionsDetailsResult, string, error) {
+	if page <= 0 {
+		page = 1
+	}
+	listURL := buildAuctionListURL(baseURL, auctionType, page)
+	var listPayload auctionListAPIResponse
+	if err := oc.FetchJSON(ctx, listURL, &listPayload); err != nil {
+		return domain.V2AuctionsDetailsResult{}, listURL, err
+	}
+
+	if len(listPayload.Auctions) == 0 {
+		return domain.V2AuctionsDetailsResult{
+			Type:         auctionType,
+			Page:         page,
+			TotalResults: listPayload.Pagination.Total,
+			TotalPages:   listPayload.Pagination.TotalPages,
+		}, listURL, nil
+	}
+
+	base := strings.TrimRight(baseURL, "/")
+	detailURLs := make([]string, len(listPayload.Auctions))
+	for i, a := range listPayload.Auctions {
+		detailURLs[i] = fmt.Sprintf("%s/api/bazaar/%d", base, a.ID)
+	}
+
+	batchBodies, err := oc.BatchFetchJSON(ctx, detailURLs)
+	if err != nil {
+		return domain.V2AuctionsDetailsResult{}, listURL, err
+	}
+
+	entries := make([]domain.V2AuctionDetail, 0, len(listPayload.Auctions))
+	for _, a := range listPayload.Auctions {
+		detailURL := fmt.Sprintf("%s/api/bazaar/%d", base, a.ID)
+		raw, ok := batchBodies[detailURL]
+		if !ok {
+			continue
+		}
+		var detailPayload v2AuctionDetailAPIResponse
+		if err := parseJSONBody(raw, &detailPayload); err != nil {
+			continue
+		}
+		entries = append(entries, mapV2AuctionDetailResponse(detailPayload))
+	}
+
+	return domain.V2AuctionsDetailsResult{
+		Type:         auctionType,
+		Page:         page,
+		TotalResults: listPayload.Pagination.Total,
+		TotalPages:   listPayload.Pagination.TotalPages,
+		Entries:      entries,
+	}, listURL, nil
+}
+
 const maxPaginatedPages = 50
 
 func v2FetchAllPaginated[T any](
