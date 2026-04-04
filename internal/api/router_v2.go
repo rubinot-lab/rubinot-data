@@ -89,6 +89,9 @@ func registerV2Routes(router *gin.Engine, oc *scraper.OptimizedClient) {
 		v2.GET("/news/newsticker", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
 			return v2GetNewsTicker(c, oc)
 		}))
+		v2.GET("/upstream/*path", handleEndpoint(func(c *gin.Context) (endpointResult, error) {
+			return v2GetUpstreamRaw(c, oc)
+		}))
 		v2.GET("/outfit", getOutfit)
 		v2.GET("/outfit/:name", getOutfitByCharacterName)
 		v2.GET("/assets/creatures/:name", handleCreatureAsset(resolvedAssetsDir))

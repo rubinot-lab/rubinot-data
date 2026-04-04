@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -759,6 +760,81 @@ func v2GetNewsTicker(c *gin.Context, oc *scraper.OptimizedClient) (endpointResul
 		Payload:    newsList,
 		Sources:    []string{sourceURL},
 	}, nil
+}
+
+func v2GetUpstreamRaw(c *gin.Context, oc *scraper.OptimizedClient) (endpointResult, error) {
+	apiPath := strings.TrimSpace(c.Param("path"))
+	if apiPath == "" {
+		return endpointResult{}, validation.NewError(validation.ErrorInvalidParameter, "path required", nil)
+	}
+
+	isTest := c.Query("test") == "true"
+
+	sourceURL := resolvedBaseURL + "/api" + apiPath
+	if queryString := c.Request.URL.RawQuery; queryString != "" {
+		cleaned := removeQueryParam(queryString, "test")
+		if cleaned != "" {
+			sourceURL = sourceURL + "?" + cleaned
+		}
+	}
+
+	rawBody, err := oc.Fetcher.FetchJSON(c.Request.Context(), sourceURL)
+	if err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	if isTest {
+		schemaKey := normalizeSchemaKey(apiPath)
+		diff, diffErr := scraper.CompareSchema(schemaKey, []byte(rawBody))
+		if diffErr != nil {
+			return endpointResult{Sources: []string{sourceURL}}, diffErr
+		}
+
+		switch diff.Status {
+		case "match":
+			scraper.UpstreamSchemaDrift.WithLabelValues(schemaKey).Set(0)
+			scraper.UpstreamSchemaNewFieldsCount.WithLabelValues(schemaKey).Set(0)
+		case "drift":
+			if len(diff.MissingFields) > 0 {
+				scraper.UpstreamSchemaDrift.WithLabelValues(schemaKey).Set(-1)
+			} else {
+				scraper.UpstreamSchemaDrift.WithLabelValues(schemaKey).Set(1)
+			}
+			total := len(diff.NewFields)
+			for _, nd := range diff.NestedDiffs {
+				total += len(nd.NewFields)
+			}
+			scraper.UpstreamSchemaNewFieldsCount.WithLabelValues(schemaKey).Set(float64(total))
+		}
+
+		return endpointResult{PayloadKey: "schema_test", Payload: diff, Sources: []string{sourceURL}}, nil
+	}
+
+	var raw json.RawMessage
+	if err := json.Unmarshal([]byte(rawBody), &raw); err != nil {
+		return endpointResult{Sources: []string{sourceURL}}, err
+	}
+
+	return endpointResult{PayloadKey: "upstream", Payload: raw, Sources: []string{sourceURL}}, nil
+}
+
+func normalizeSchemaKey(apiPath string) string {
+	parts := strings.Split(strings.Trim(apiPath, "/"), "/")
+	if len(parts) >= 1 && parts[0] == "bazaar" && len(parts) == 2 {
+		return "/api/bazaar/{id}"
+	}
+	return "/api/" + strings.Join(parts, "/")
+}
+
+func removeQueryParam(rawQuery, param string) string {
+	pairs := strings.Split(rawQuery, "&")
+	var kept []string
+	for _, p := range pairs {
+		if !strings.HasPrefix(p, param+"=") {
+			kept = append(kept, p)
+		}
+	}
+	return strings.Join(kept, "&")
 }
 
 func parseDeathsFilters(c *gin.Context) (scraper.DeathsFilters, error) {
