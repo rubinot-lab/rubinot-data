@@ -12,6 +12,21 @@ var UpstreamSchemas = map[string]SchemaExpectation{
 			"worlds[0]": {"name", "pvpType", "pvpTypeLabel", "worldType", "locked", "playersOnline"},
 		},
 	},
+	"/api/worlds/{name}": {
+		TopLevel: []string{"world", "playersOnline"},
+	},
+	"/api/characters/search": {
+		TopLevel: []string{"player", "characters"},
+	},
+	"/api/guilds/{name}": {
+		TopLevel: []string{"guild", "members"},
+	},
+	"/api/killstats": {
+		TopLevel: []string{"entries", "world"},
+	},
+	"/api/bans": {
+		TopLevel: []string{"entries", "pagination"},
+	},
 	"/api/highscores": {
 		TopLevel: []string{"players", "totalCount", "cachedAt"},
 		Nested: map[string][]string{

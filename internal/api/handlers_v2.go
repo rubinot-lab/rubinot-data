@@ -953,9 +953,16 @@ func v2PostKillstatisticsBatch(c *gin.Context, validator *validation.Validator, 
 }
 
 func normalizeSchemaKey(apiPath string) string {
-	parts := strings.Split(strings.Trim(apiPath, "/"), "/")
-	if len(parts) >= 1 && parts[0] == "bazaar" && len(parts) == 2 {
+	path := strings.Split(apiPath, "?")[0]
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 2 && parts[0] == "bazaar" {
 		return "/api/bazaar/{id}"
+	}
+	if len(parts) == 2 && parts[0] == "worlds" {
+		return "/api/worlds/{name}"
+	}
+	if len(parts) == 2 && parts[0] == "guilds" && parts[1] != "" {
+		return "/api/guilds/{name}"
 	}
 	return "/api/" + strings.Join(parts, "/")
 }
