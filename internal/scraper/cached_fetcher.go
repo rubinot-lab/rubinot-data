@@ -105,9 +105,13 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 				CDPFetchRequests.WithLabelValues("error").Inc()
 
 				errMsg := fetchErr.Error()
-				if strings.Contains(errMsg, "HTTP 403") && strings.Contains(errMsg, "Just a moment") {
+				isCF := (strings.Contains(errMsg, "HTTP 403") && strings.Contains(errMsg, "Just a moment")) ||
+					(strings.Contains(errMsg, "HTTP 403") && strings.Contains(errMsg, "Access denied")) ||
+					strings.Contains(errMsg, "Failed to fetch") ||
+					strings.Contains(errMsg, "CDP not connected")
+				if isCF {
 					CDPFetchRequests.WithLabelValues("cf_challenge").Inc()
-					log.Printf("[cdp-pool] Cloudflare 403 detected on fetch for %s", cacheKey)
+					log.Printf("[cdp-pool] session issue detected on fetch for %s: %s", cacheKey, errMsg[:min(len(errMsg), 80)])
 					f.triggerReWarm()
 					time.Sleep(3 * time.Second)
 				}

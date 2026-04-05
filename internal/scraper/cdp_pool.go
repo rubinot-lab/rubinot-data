@@ -59,7 +59,7 @@ func (p *CDPPool) warmFlareSolverrSession(ctx context.Context) error {
 		"session":           "rubinot-cdp",
 		"maxTimeout":        120000,
 		"disableMedia":      true,
-		"session_ttl_minutes": 30,
+		"session_ttl_minutes": 1440,
 	})
 	req2, err := http.NewRequestWithContext(ctx, "POST", p.flareSolverrURL, bytes.NewReader(warmBody))
 	if err != nil {
