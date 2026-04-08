@@ -203,6 +203,10 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 }
 
 func (f *CachedFetcher) FetchBinary(ctx context.Context, apiPath string) ([]byte, string, error) {
+	if f.rubinidata != nil {
+		return f.rubinidata.FetchBinary(ctx, apiPath)
+	}
+
 	tab, idx, err := f.pool.Acquire(ctx)
 	if err != nil {
 		return nil, "", err
@@ -242,6 +246,19 @@ func (f *CachedFetcher) BatchFetchJSON(ctx context.Context, apiURLs []string) (m
 	}
 
 	if len(pending) == 0 {
+		return results, nil
+	}
+
+	if f.rubinidata != nil {
+		fetched, fetchErr := f.rubinidata.BatchFetch(ctx, pendingKeys)
+		if fetchErr != nil {
+			return nil, fetchErr
+		}
+		for i, key := range pendingKeys {
+			body := fetched[key]
+			f.cache.Store(key, &cacheEntry{value: body, expiresAt: time.Now().Add(f.ttl)})
+			results[pending[i]] = body
+		}
 		return results, nil
 	}
 

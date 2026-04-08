@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,6 +78,69 @@ func (c *RubinidataClient) Fetch(ctx context.Context, upstreamURL string) (strin
 	}
 
 	return "", fmt.Errorf("rubinidata fetch failed after %d retries: %w", rubinidataMaxRetries, lastErr)
+}
+
+const batchConcurrency = 10
+
+func (c *RubinidataClient) BatchFetch(ctx context.Context, paths []string) (map[string]string, error) {
+	results := make(map[string]string, len(paths))
+	var mu sync.Mutex
+	var firstErr error
+	sem := make(chan struct{}, batchConcurrency)
+	var wg sync.WaitGroup
+
+	for _, p := range paths {
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			body, err := c.Fetch(ctx, path)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				if firstErr == nil {
+					firstErr = fmt.Errorf("batch fetch %s: %w", path, err)
+				}
+				return
+			}
+			results[path] = body
+		}(p)
+	}
+	wg.Wait()
+
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return results, nil
+}
+
+func (c *RubinidataClient) FetchBinary(ctx context.Context, upstreamPath string) ([]byte, string, error) {
+	translatedPath, err := translatePath(upstreamPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("translate path: %w", err)
+	}
+
+	reqURL := c.baseURL + translatedPath
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("X-API-Key", c.apiKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("HTTP GET %s: %w", reqURL, err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("read response body: %w", err)
+	}
+
+	return raw, resp.Header.Get("Content-Type"), nil
 }
 
 func (c *RubinidataClient) doGet(ctx context.Context, path string) (string, int, error) {
@@ -220,6 +284,13 @@ func translatePath(upstreamURL string) (string, error) {
 
 	case path == "/api/boosted":
 		return "/v1/boosted", nil
+
+	case path == "/api/outfit":
+		result := "/v1/outfit"
+		if raw := parsed.RawQuery; raw != "" {
+			result += "?" + raw
+		}
+		return result, nil
 
 	default:
 		return "", fmt.Errorf("unrecognized upstream path: %s", path)

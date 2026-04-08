@@ -178,6 +178,18 @@ func TestTranslatePath(t *testing.T) {
 			false,
 		},
 		{
+			"outfit with query params",
+			"/api/outfit?type=128&head=78&body=97&legs=86&feet=95&addons=0&direction=3&animated=1&walk=1&size=0",
+			"/v1/outfit?type=128&head=78&body=97&legs=86&feet=95&addons=0&direction=3&animated=1&walk=1&size=0",
+			false,
+		},
+		{
+			"outfit no params",
+			"/api/outfit",
+			"/v1/outfit",
+			false,
+		},
+		{
 			"unrecognized path errors",
 			"https://rubinot.com.br/api/unknown/endpoint",
 			"",
