@@ -24,10 +24,13 @@ services:
       - flaresolverr
     environment:
       PORT: "8080"
+      UPSTREAM_PROVIDER: "${UPSTREAM_PROVIDER:-rubinot}"
+      RUBINIDATA_URL: "${RUBINIDATA_URL:-https://api.rubinidata.com}"
+      RUBINIDATA_API_KEY: "${RUBINIDATA_API_KEY:-}"
       FLARESOLVERR_URL: "http://localhost:8191/v1"
       RUBINOT_BASE_URL: "https://rubinot.com.br"
       SCRAPE_MAX_TIMEOUT_MS: "120000"
       SCRAPE_MAX_CONCURRENCY: "8"
-      CDP_URL: "ws://localhost:9222"
+      CDP_URL: "${CDP_URL:-ws://localhost:9222}"
       APP_VERSION: "v0.2.0"
       APP_COMMIT: "local"
