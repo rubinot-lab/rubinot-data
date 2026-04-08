@@ -21,6 +21,7 @@ type cacheEntry struct {
 
 type CachedFetcher struct {
 	pool       *CDPPool
+	rubinidata *RubinidataClient
 	group      singleflight.Group
 	cache      sync.Map
 	ttl        time.Duration
@@ -30,10 +31,17 @@ type CachedFetcher struct {
 }
 
 func NewCachedFetcher(pool *CDPPool, ttl time.Duration) *CachedFetcher {
-	return &CachedFetcher{pool: pool, ttl: ttl}
+	f := &CachedFetcher{pool: pool, ttl: ttl}
+	if IsRubinidataProvider() {
+		f.rubinidata = NewRubinidataClientFromEnv()
+	}
+	return f
 }
 
 func (f *CachedFetcher) IsReady() bool {
+	if f.rubinidata != nil {
+		return true
+	}
 	return !f.cfBlocked.Load()
 }
 
@@ -71,6 +79,14 @@ func (f *CachedFetcher) SetLastWarmAt(t time.Time) {
 	f.lastWarmAt = t
 }
 
+func (f *CachedFetcher) SetRubinidataWorldMapping(m map[int]string) {
+	mappings := make([]WorldMapping, 0, len(m))
+	for id, name := range m {
+		mappings = append(mappings, WorldMapping{ID: id, Name: name})
+	}
+	UpdateWorldMappings(mappings)
+}
+
 func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, error) {
 	cacheKey, err := apiPathFromURL(apiURL)
 	if err != nil {
@@ -88,6 +104,15 @@ func (f *CachedFetcher) FetchJSON(ctx context.Context, apiURL string) (string, e
 	CacheRequests.WithLabelValues("miss").Inc()
 
 	result, err, shared := f.group.Do(cacheKey, func() (interface{}, error) {
+		if f.rubinidata != nil {
+			body, fetchErr := f.rubinidata.Fetch(ctx, cacheKey)
+			if fetchErr != nil {
+				return nil, fetchErr
+			}
+			f.cache.Store(cacheKey, &cacheEntry{value: body, expiresAt: time.Now().Add(f.ttl)})
+			return body, nil
+		}
+
 		var lastErr error
 		for attempt := 0; attempt < maxFetchRetries; attempt++ {
 			tab, idx, acquireErr := f.pool.Acquire(ctx)
