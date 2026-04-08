@@ -171,6 +171,14 @@ func (v *Validator) AllTowns() []Town {
 	return allTowns
 }
 
+func (v *Validator) WorldIDToName() map[int]string {
+	result := make(map[int]string, len(v.worldsByKey))
+	for _, w := range v.worldsByKey {
+		result[w.ID] = w.Name
+	}
+	return result
+}
+
 func (v *Validator) AllWorlds() []World {
 	uniqueByID := make(map[int]World)
 	for _, world := range v.worldsByKey {

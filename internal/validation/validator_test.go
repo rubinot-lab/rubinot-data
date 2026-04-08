@@ -445,6 +445,29 @@ func TestParsePvPOnlyFilter(t *testing.T) {
 	assertValidationCode(t, err, ErrorPvPFilterInvalid)
 }
 
+func TestWorldIDToName(t *testing.T) {
+	validator := testValidator()
+	mapping := validator.WorldIDToName()
+
+	if len(mapping) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(mapping))
+	}
+	if mapping[15] != "Belaria" {
+		t.Fatalf("expected mapping[15]=Belaria, got %q", mapping[15])
+	}
+	if mapping[22] != "Serenian" {
+		t.Fatalf("expected mapping[22]=Serenian, got %q", mapping[22])
+	}
+}
+
+func TestWorldIDToNameEmpty(t *testing.T) {
+	validator := NewValidator([]World{})
+	mapping := validator.WorldIDToName()
+	if len(mapping) != 0 {
+		t.Fatalf("expected empty mapping, got %d entries", len(mapping))
+	}
+}
+
 func testValidator() *Validator {
 	return NewValidator([]World{
 		{ID: 15, Name: "Belaria"},
