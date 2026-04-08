@@ -52,6 +52,11 @@ func NewRouter() (*gin.Engine, error) {
 		return nil, err
 	}
 	currentValidator.Store(validator)
+
+	if scraper.IsRubinidataProvider() && oc.Fetcher != nil {
+		oc.Fetcher.SetRubinidataWorldMapping(validator.WorldIDToName())
+	}
+
 	startValidatorRefresh(oc)
 
 	router := gin.New()
@@ -258,6 +263,13 @@ func registerV1Routes(router *gin.Engine, oc *scraper.OptimizedClient) {
 }
 
 func initOptimizedClient(ctx context.Context) (*scraper.OptimizedClient, error) {
+	if scraper.IsRubinidataProvider() {
+		log.Println("[router] UPSTREAM_PROVIDER=rubinidata — skipping CDP/FlareSolverr init")
+		cacheTTL := getEnvInt("CDP_CACHE_TTL_SECONDS", 5)
+		fetcher := scraper.NewCachedFetcher(nil, time.Duration(cacheTTL)*time.Second)
+		return scraper.NewOptimizedClient(fetcher), nil
+	}
+
 	cdpURL := getEnv("CDP_URL", "")
 	if cdpURL == "" {
 		return nil, fmt.Errorf("CDP_URL not set")
