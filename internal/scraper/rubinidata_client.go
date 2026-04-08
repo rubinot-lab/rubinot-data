@@ -296,3 +296,4 @@ func translatePath(upstreamURL string) (string, error) {
 		return "", fmt.Errorf("unrecognized upstream path: %s", path)
 	}
 }
+// rubinidata bridge v2.8.0
