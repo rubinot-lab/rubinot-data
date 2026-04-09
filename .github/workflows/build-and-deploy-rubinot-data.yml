@@ -14,18 +14,184 @@ concurrency:
   group: rubinot-data-release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  IMAGE_REPO: ghcr.io/rubinot-lab/rubinot-data
+  GITOPS_REPO: rubinot-lab/platform-gitops
+  GITOPS_BRANCH: main
+  ARGOCD_APP: rubinot-lab-rubinot-prod
+  GITOPS_DIR: apps/rubinot/manifests/prod
+
 jobs:
   build-and-deploy:
-    uses: rubinot-lab/cicd-templates/.github/workflows/build-and-deploy.yml@main
-    with:
-      image-repo: ghcr.io/rubinot-lab/rubinot-data
-      gitops-repo: rubinot-lab/platform-gitops
-      gitops-branch: main
-      argocd-app: rubinot-lab-rubinot-prod
-      gitops-dir: apps/rubinot/manifests/prod
-    secrets:
-      GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
-      ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
-      ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
-      CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
-      CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute release vars
+        id: vars
+        run: |
+          set -euo pipefail
+          echo "short_sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+      - name: Login to GHCR
+        run: |
+          set -euo pipefail
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPO }}:${{ steps.vars.outputs.short_sha }}
+            ${{ env.IMAGE_REPO }}:${{ steps.vars.outputs.tag_name }}
+            ${{ env.IMAGE_REPO }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Checkout GitOps repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+          ref: ${{ env.GITOPS_BRANCH }}
+
+      - name: Update GitOps manifests
+        env:
+          GITOPS_DIR_PATH: gitops/${{ env.GITOPS_DIR }}
+          SHORT_SHA: ${{ steps.vars.outputs.short_sha }}
+          TAG_NAME: ${{ steps.vars.outputs.tag_name }}
+          IMAGE: ${{ env.IMAGE_REPO }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re
+          from pathlib import Path
+
+          base = Path(os.environ['GITOPS_DIR_PATH'])
+          short_sha = os.environ['SHORT_SHA']
+          tag_name = os.environ['TAG_NAME']
+          image = os.environ['IMAGE']
+
+          if not base.exists():
+              raise SystemExit(f"GitOps dir not found: {base}")
+
+          for path in sorted(base.glob('*.yaml')):
+              text = path.read_text()
+              updated = re.sub(
+                  re.escape(image) + r":[^\s\"']+",
+                  f"{image}:{short_sha}",
+                  text,
+              )
+              updated = re.sub(
+                  r"(name:\s*APP_VERSION\s*\n\s*value:\s*)\S+",
+                  rf"\g<1>{tag_name}",
+                  updated,
+              )
+              updated = re.sub(
+                  r"(name:\s*APP_COMMIT\s*\n\s*value:\s*)\S+",
+                  rf'\g<1>"{short_sha}"',
+                  updated,
+              )
+              if updated != text:
+                  path.write_text(updated)
+          PY
+
+      - name: Commit GitOps update
+        id: gitops_commit
+        run: |
+          set -euo pipefail
+          cd gitops
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "committed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git add -A
+          git commit -m "chore(${{ env.ARGOCD_APP }}): deploy ${{ steps.vars.outputs.tag_name }} (${{ steps.vars.outputs.short_sha }})"
+          git push origin "${{ env.GITOPS_BRANCH }}"
+          echo "committed=true" >> "$GITHUB_OUTPUT"
+          echo "gitops_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for ArgoCD sync
+        if: steps.gitops_commit.outputs.committed == 'true'
+        env:
+          ARGOCD_SERVER: ${{ secrets.ARGOCD_SERVER }}
+          ARGOCD_AUTH_TOKEN: ${{ secrets.ARGOCD_AUTH_TOKEN }}
+          TARGET_REVISION: ${{ steps.gitops_commit.outputs.gitops_sha }}
+          APP_NAME: ${{ env.ARGOCD_APP }}
+          CF_ACCESS_CLIENT_ID: ${{ secrets.CF_ACCESS_CLIENT_ID }}
+          CF_ACCESS_CLIENT_SECRET: ${{ secrets.CF_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          base_url="${ARGOCD_SERVER}"
+          case "$base_url" in
+            http://*|https://*) ;;
+            *) base_url="https://${base_url}" ;;
+          esac
+          api_url="${base_url}/api/v1/applications/${APP_NAME}"
+
+          cf_access_jwt=""
+          if [ -n "${CF_ACCESS_CLIENT_ID:-}" ] && [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+            token_resp=$(curl -sS -X POST "${base_url}/cdn-cgi/access/token" \
+              -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" \
+              -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" \
+              -H "Content-Type: application/json" || true)
+            cf_access_jwt=$(printf '%s' "$token_resp" | python3 -c 'import json,sys; raw=sys.stdin.read().strip(); obj=(json.loads(raw) if raw else {}); print(obj.get("token",""))' 2>/dev/null || true)
+          fi
+
+          deadline=$(( $(date +%s) + 900 ))
+          attempt=0
+          while true; do
+            attempt=$((attempt+1))
+            tmp=$(mktemp)
+            header_args=(
+              -H "Authorization: Bearer ${ARGOCD_AUTH_TOKEN}"
+              -H "Content-Type: application/json"
+              -H "Accept: application/json"
+              -H "Cookie: argocd.token=${ARGOCD_AUTH_TOKEN}"
+            )
+            if [ -n "${CF_ACCESS_CLIENT_ID:-}" ]; then
+              header_args+=( -H "CF-Access-Client-Id: ${CF_ACCESS_CLIENT_ID}" )
+            fi
+            if [ -n "${CF_ACCESS_CLIENT_SECRET:-}" ]; then
+              header_args+=( -H "CF-Access-Client-Secret: ${CF_ACCESS_CLIENT_SECRET}" )
+            fi
+            if [ -n "${cf_access_jwt:-}" ]; then
+              header_args+=( -H "CF-Access-Jwt-Assertion: ${cf_access_jwt}" )
+              header_args+=( -H "Cookie: argocd.token=${ARGOCD_AUTH_TOKEN}; CF_Authorization=${cf_access_jwt}" )
+            fi
+
+            code=$(curl -sS -L --max-redirs 5 -o "$tmp" -w "%{http_code}" "${header_args[@]}" "$api_url" || true)
+
+            if [ "$code" = "200" ]; then
+              rev=$(jq -r '.status.sync.revision // ""' "$tmp" 2>/dev/null || true)
+              sync=$(jq -r '.status.sync.status // ""' "$tmp" 2>/dev/null || true)
+              health=$(jq -r '.status.health.status // ""' "$tmp" 2>/dev/null || true)
+              echo "[attempt ${attempt}] revision=${rev} sync=${sync} health=${health} target=${TARGET_REVISION}"
+
+              if [ "$rev" = "$TARGET_REVISION" ] && [ "$sync" = "Synced" ] && [ "$health" = "Healthy" ]; then
+                echo "Deployment verified: ${APP_NAME} at ${TARGET_REVISION}"
+                rm -f "$tmp"
+                break
+              fi
+            else
+              echo "[attempt ${attempt}] ArgoCD API HTTP ${code}"
+            fi
+            rm -f "$tmp"
+
+            if [ $(date +%s) -ge $deadline ]; then
+              echo "Timed out waiting for ArgoCD sync" >&2
+              exit 1
+            fi
+            sleep 10
+          done
