@@ -869,6 +869,29 @@ func V2FetchCharactersBatch(ctx context.Context, oc *OptimizedClient, baseURL st
 		sources[i] = base + path
 	}
 
+	if oc.Fetcher.rubinidata != nil {
+		fetched, err := oc.Fetcher.rubinidata.BatchFetch(ctx, paths)
+		if err != nil {
+			return nil, sources, err
+		}
+		characters := make([]domain.CharacterResult, 0, len(fetched))
+		for _, path := range paths {
+			body, ok := fetched[path]
+			if !ok {
+				continue
+			}
+			var payload characterAPIResponse
+			if err := parseJSONBody(body, &payload); err != nil {
+				continue
+			}
+			if payload.Player == nil {
+				continue
+			}
+			characters = append(characters, mapCharacterResponse(payload))
+		}
+		return characters, sources, nil
+	}
+
 	tab, idx, err := oc.Fetcher.pool.Acquire(ctx)
 	if err != nil {
 		return nil, sources, err
@@ -911,6 +934,26 @@ func V2FetchGuildsBatch(ctx context.Context, oc *OptimizedClient, baseURL string
 		sources[i] = base + path
 	}
 
+	if oc.Fetcher.rubinidata != nil {
+		fetched, err := oc.Fetcher.rubinidata.BatchFetch(ctx, paths)
+		if err != nil {
+			return nil, sources, err
+		}
+		guilds := make([]domain.GuildResult, 0, len(fetched))
+		for _, path := range paths {
+			body, ok := fetched[path]
+			if !ok {
+				continue
+			}
+			var payload guildAPIResponse
+			if err := parseJSONBody(body, &payload); err != nil {
+				continue
+			}
+			guilds = append(guilds, mapGuildResponse(payload))
+		}
+		return guilds, sources, nil
+	}
+
 	tab, idx, err := oc.Fetcher.pool.Acquire(ctx)
 	if err != nil {
 		return nil, sources, err
@@ -948,6 +991,26 @@ func V2FetchKillstatisticsBatchDirect(ctx context.Context, oc *OptimizedClient, 
 		path := fmt.Sprintf("/api/killstats?world=%d", w.ID)
 		paths[i] = path
 		sources[i] = base + path
+	}
+
+	if oc.Fetcher.rubinidata != nil {
+		fetched, err := oc.Fetcher.rubinidata.BatchFetch(ctx, paths)
+		if err != nil {
+			return nil, sources, err
+		}
+		results := make([]domain.KillstatisticsResult, 0, len(fetched))
+		for i, path := range paths {
+			body, ok := fetched[path]
+			if !ok {
+				continue
+			}
+			var payload killstatisticsAPIResponse
+			if err := parseJSONBody(body, &payload); err != nil {
+				continue
+			}
+			results = append(results, mapKillstatisticsResponse(worlds[i].Name, payload))
+		}
+		return results, sources, nil
 	}
 
 	tab, idx, err := oc.Fetcher.pool.Acquire(ctx)
